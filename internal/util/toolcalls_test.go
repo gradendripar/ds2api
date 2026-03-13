@@ -279,3 +279,45 @@ func TestParseToolCallsDoesNotAcceptMismatchedMarkupTags(t *testing.T) {
 		t.Fatalf("expected mismatched tags to be rejected, got %#v", calls)
 	}
 }
+
+func TestRepairInvalidJSONBackslashes(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`{"path": "C:\Users\name"}`, `{"path": "C:\\Users\name"}`},
+		{`{"cmd": "cd D:\git_codes"}`, `{"cmd": "cd D:\\git_codes"}`},
+		{`{"text": "line1\nline2"}`, `{"text": "line1\nline2"}`},
+		{`{"path": "D:\\back\\slash"}`, `{"path": "D:\\back\\slash"}`},
+		{`{"unicode": "\u2705"}`, `{"unicode": "\u2705"}`},
+		{`{"invalid_u": "\u123"}`, `{"invalid_u": "\\u123"}`},
+	}
+
+	for _, tt := range tests {
+		got := repairInvalidJSONBackslashes(tt.input)
+		if got != tt.expected {
+			t.Errorf("repairInvalidJSONBackslashes(%s) = %s; want %s", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestParseToolCallsWithInvalidBackslashes(t *testing.T) {
+	// DeepSeek sometimes outputs Windows paths with single backslashes in JSON strings
+	text := `好的，执行以下命令：{"name": "execute_command", "input": "{\"command\": \"cd D:\git_codes && dir\"}"}`
+	availableTools := []string{"execute_command"}
+	
+	parsed := ParseToolCalls(text, availableTools)
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(parsed))
+	}
+	
+	cmd, ok := parsed[0].Input["command"].(string)
+	if !ok {
+		t.Fatalf("expected command string in input, got %v", parsed[0].Input)
+	}
+	
+	expected := "cd D:\\git_codes && dir"
+	if cmd != expected {
+		t.Errorf("expected command %q, got %q", expected, cmd)
+	}
+}

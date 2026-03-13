@@ -167,13 +167,28 @@ func findToolSegmentStart(s string) int {
 		return -1
 	}
 	lower := strings.ToLower(s)
+	keywords := []string{"tool_calls", "function.name:", "[tool_call_history]"}
 	offset := 0
 	for {
-		keyRel := strings.Index(lower[offset:], "tool_calls")
-		if keyRel < 0 {
+		bestKeyIdx := -1
+		matchedKeyword := ""
+
+		for _, kw := range keywords {
+			idx := strings.Index(lower[offset:], kw)
+			if idx >= 0 {
+				absIdx := offset + idx
+				if bestKeyIdx < 0 || absIdx < bestKeyIdx {
+					bestKeyIdx = absIdx
+					matchedKeyword = kw
+				}
+			}
+		}
+
+		if bestKeyIdx < 0 {
 			return -1
 		}
-		keyIdx := offset + keyRel
+
+		keyIdx := bestKeyIdx
 		start := strings.LastIndex(s[:keyIdx], "{")
 		if start < 0 {
 			start = keyIdx
@@ -181,7 +196,7 @@ func findToolSegmentStart(s string) int {
 		if !insideCodeFence(s[:start]) {
 			return start
 		}
-		offset = keyIdx + len("tool_calls")
+		offset = keyIdx + len(matchedKeyword)
 	}
 }
 
