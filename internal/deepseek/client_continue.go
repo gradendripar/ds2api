@@ -30,7 +30,7 @@ type continueState struct {
 // AUTO_CONTINUE), ds2api will automatically call the DeepSeek continue
 // endpoint and splice the continuation SSE stream onto the original.
 // The caller sees a single, seamless SSE stream.
-func (c *Client) wrapCompletionWithAutoContinue(ctx context.Context, a *auth.RequestAuth, payload map[string]any, resp *http.Response) *http.Response {
+func (c *Client) wrapCompletionWithAutoContinue(ctx context.Context, a *auth.RequestAuth, payload map[string]any, powResp string, resp *http.Response) *http.Response {
 	if resp == nil || resp.Body == nil {
 		return resp
 	}
@@ -41,17 +41,18 @@ func (c *Client) wrapCompletionWithAutoContinue(ctx context.Context, a *auth.Req
 	}
 	config.Logger.Debug("[auto_continue] wrapping completion response", "session_id", sessionID)
 	resp.Body = newAutoContinueBody(ctx, resp.Body, sessionID, defaultAutoContinueLimit, func(ctx context.Context, sessionID string, responseMessageID int) (*http.Response, error) {
-		return c.callContinue(ctx, a, sessionID, responseMessageID)
+		return c.callContinue(ctx, a, sessionID, responseMessageID, powResp)
 	})
 	return resp
 }
 
 // callContinue sends a continue request to DeepSeek to resume generation.
-func (c *Client) callContinue(ctx context.Context, a *auth.RequestAuth, sessionID string, responseMessageID int) (*http.Response, error) {
+func (c *Client) callContinue(ctx context.Context, a *auth.RequestAuth, sessionID string, responseMessageID int, powResp string) (*http.Response, error) {
 	if strings.TrimSpace(sessionID) == "" || responseMessageID <= 0 {
 		return nil, errors.New("missing continue identifiers")
 	}
 	headers := c.authHeaders(a.DeepSeekToken)
+	headers["x-ds-pow-response"] = powResp
 	payload := map[string]any{
 		"chat_session_id":    sessionID,
 		"message_id":         responseMessageID,

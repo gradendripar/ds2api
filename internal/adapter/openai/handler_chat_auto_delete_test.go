@@ -16,6 +16,7 @@ type autoDeleteModeDSStub struct {
 	singleCalls   int
 	allCalls      int
 	lastSessionID string
+	lastCtxErr    error
 }
 
 func (m *autoDeleteModeDSStub) CreateSession(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
@@ -39,6 +40,13 @@ func (m *autoDeleteModeDSStub) DeleteSessionForToken(_ context.Context, _ string
 func (m *autoDeleteModeDSStub) DeleteAllSessionsForToken(_ context.Context, _ string) error {
 	m.allCalls++
 	return nil
+}
+
+func (m *autoDeleteModeDSStub) DeleteSessionForTokenCtx(ctx context.Context, _ string, sessionID string) (*deepseek.DeleteSessionResult, error) {
+	m.singleCalls++
+	m.lastSessionID = sessionID
+	m.lastCtxErr = ctx.Err()
+	return &deepseek.DeleteSessionResult{SessionID: sessionID, Success: true}, nil
 }
 
 func TestChatCompletionsAutoDeleteModes(t *testing.T) {
@@ -91,5 +99,41 @@ func TestChatCompletionsAutoDeleteModes(t *testing.T) {
 				t.Fatalf("expected single delete for session-id, got %q", ds.lastSessionID)
 			}
 		})
+	}
+}
+
+type autoDeleteCtxDSStub struct {
+	autoDeleteModeDSStub
+}
+
+func (m *autoDeleteCtxDSStub) DeleteSessionForToken(ctx context.Context, token string, sessionID string) (*deepseek.DeleteSessionResult, error) {
+	return m.autoDeleteModeDSStub.DeleteSessionForTokenCtx(ctx, token, sessionID)
+}
+
+func (m *autoDeleteCtxDSStub) DeleteAllSessionsForToken(_ context.Context, _ string) error {
+	m.allCalls++
+	return nil
+}
+
+func TestAutoDeleteRemoteSessionIgnoresCanceledParentContext(t *testing.T) {
+	ds := &autoDeleteCtxDSStub{}
+	h := &Handler{
+		Store: mockOpenAIConfig{
+			wideInput:      true,
+			autoDeleteMode: "single",
+		},
+		DS: ds,
+	}
+	a := &auth.RequestAuth{DeepSeekToken: "token", AccountID: "acct"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	h.autoDeleteRemoteSession(ctx, a, "session-id")
+
+	if ds.singleCalls != 1 {
+		t.Fatalf("single delete calls=%d want=1", ds.singleCalls)
+	}
+	if ds.lastCtxErr != nil {
+		t.Fatalf("delete ctx should not inherit cancellation, got %v", ds.lastCtxErr)
 	}
 }

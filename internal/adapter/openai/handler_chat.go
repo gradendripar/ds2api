@@ -87,7 +87,8 @@ func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAu
 		return
 	}
 
-	deleteCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	deleteBaseCtx := context.WithoutCancel(ctx)
+	deleteCtx, cancel := context.WithTimeout(deleteBaseCtx, 10*time.Second)
 	defer cancel()
 
 	switch mode {
