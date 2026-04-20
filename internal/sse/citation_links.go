@@ -66,7 +66,11 @@ func (c *citationLinkCollector) captureURLAndIndex(m map[string]any) {
 	if !hasIdx {
 		return
 	}
-	if idx <= 0 {
+	// DeepSeek citation indices in search results are zero-based (0,1,2,...),
+	// while visible markers are one-based ([citation:1], [citation:2], ...).
+	// Normalize all non-negative explicit indices to one-based to avoid
+	// misalignment when 3+ citations are present.
+	if idx >= 0 {
 		idx = idx + 1
 	}
 	if idx <= 0 {

@@ -131,6 +131,25 @@ func TestCollectStreamExtractsCitationLinks(t *testing.T) {
 	}
 }
 
+func TestCollectStreamExtractsCitationLinksForSequentialZeroBasedIndices(t *testing.T) {
+	resp := makeHTTPResponse(
+		"data: {\"p\":\"response/fragments/-1/results\",\"v\":[{\"url\":\"https://example.com/a\",\"cite_index\":0},{\"url\":\"https://example.com/b\",\"cite_index\":1},{\"url\":\"https://example.com/c\",\"cite_index\":2}]}\n" +
+			"data: {\"p\":\"response/content\",\"v\":\"结论[citation:1][citation:2][citation:3]\"}\n" +
+			"data: [DONE]\n",
+	)
+	result := CollectStream(resp, false, false)
+
+	if got := result.CitationLinks[1]; got != "https://example.com/a" {
+		t.Fatalf("expected citation 1 link, got %q", got)
+	}
+	if got := result.CitationLinks[2]; got != "https://example.com/b" {
+		t.Fatalf("expected citation 2 link, got %q", got)
+	}
+	if got := result.CitationLinks[3]; got != "https://example.com/c" {
+		t.Fatalf("expected citation 3 link, got %q", got)
+	}
+}
+
 func TestCollectStreamMultipleThinkingChunks(t *testing.T) {
 	resp := makeHTTPResponse(
 		"data: {\"p\":\"response/thinking_content\",\"v\":\"part1\"}\n" +
