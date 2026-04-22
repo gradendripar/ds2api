@@ -8,6 +8,7 @@ type StandardRequest struct {
 	ResolvedModel  string
 	ResponseModel  string
 	Messages       []any
+	ToolsRaw       any
 	FinalPrompt    string
 	ToolNames      []string
 	ToolChoice     ToolChoicePolicy

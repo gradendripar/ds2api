@@ -154,6 +154,10 @@ func TestConfigJSONRoundtrip(t *testing.T) {
 		AutoDelete: AutoDeleteConfig{
 			Mode: "single",
 		},
+		HistorySplit: HistorySplitConfig{
+			Enabled:           &trueVal,
+			TriggerAfterTurns: func() *int { v := 2; return &v }(),
+		},
 		Runtime: RuntimeConfig{
 			TokenRefreshIntervalHours: 12,
 		},
@@ -192,6 +196,12 @@ func TestConfigJSONRoundtrip(t *testing.T) {
 	}
 	if decoded.AutoDelete.Mode != "single" {
 		t.Fatalf("unexpected auto delete mode: %#v", decoded.AutoDelete.Mode)
+	}
+	if decoded.HistorySplit.Enabled == nil || !*decoded.HistorySplit.Enabled {
+		t.Fatalf("unexpected history split enabled: %#v", decoded.HistorySplit.Enabled)
+	}
+	if decoded.HistorySplit.TriggerAfterTurns == nil || *decoded.HistorySplit.TriggerAfterTurns != 2 {
+		t.Fatalf("unexpected history split trigger_after_turns: %#v", decoded.HistorySplit.TriggerAfterTurns)
 	}
 	if decoded.Compat.WideInputStrictOutput == nil || !*decoded.Compat.WideInputStrictOutput {
 		t.Fatalf("unexpected compat wide_input_strict_output: %#v", decoded.Compat.WideInputStrictOutput)
@@ -249,6 +259,8 @@ func TestConfigUnmarshalJSONPreservesUnknownFields(t *testing.T) {
 
 func TestConfigCloneIsDeepCopy(t *testing.T) {
 	falseVal := false
+	trueVal := true
+	turns := 2
 	cfg := Config{
 		Keys:     []string{"key1"},
 		Accounts: []Account{{Email: "user@test.com", Token: "token"}},
@@ -257,6 +269,10 @@ func TestConfigCloneIsDeepCopy(t *testing.T) {
 		},
 		Compat: CompatConfig{
 			StripReferenceMarkers: &falseVal,
+		},
+		HistorySplit: HistorySplitConfig{
+			Enabled:           &trueVal,
+			TriggerAfterTurns: &turns,
 		},
 		AdditionalFields: map[string]any{"custom": "value"},
 	}
@@ -269,6 +285,12 @@ func TestConfigCloneIsDeepCopy(t *testing.T) {
 	cfg.ClaudeMapping["fast"] = "modified-model"
 	if cfg.Compat.StripReferenceMarkers != nil {
 		*cfg.Compat.StripReferenceMarkers = true
+	}
+	if cfg.HistorySplit.Enabled != nil {
+		*cfg.HistorySplit.Enabled = false
+	}
+	if cfg.HistorySplit.TriggerAfterTurns != nil {
+		*cfg.HistorySplit.TriggerAfterTurns = 5
 	}
 
 	// Cloned should not be affected
@@ -283,6 +305,12 @@ func TestConfigCloneIsDeepCopy(t *testing.T) {
 	}
 	if cloned.Compat.StripReferenceMarkers == nil || *cloned.Compat.StripReferenceMarkers {
 		t.Fatalf("clone compat was affected: %#v", cloned.Compat.StripReferenceMarkers)
+	}
+	if cloned.HistorySplit.Enabled == nil || !*cloned.HistorySplit.Enabled {
+		t.Fatalf("clone history split enabled was affected: %#v", cloned.HistorySplit.Enabled)
+	}
+	if cloned.HistorySplit.TriggerAfterTurns == nil || *cloned.HistorySplit.TriggerAfterTurns != 2 {
+		t.Fatalf("clone history split trigger was affected: %#v", cloned.HistorySplit.TriggerAfterTurns)
 	}
 }
 

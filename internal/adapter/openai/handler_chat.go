@@ -63,6 +63,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	stdReq, err = h.applyHistorySplit(r.Context(), a, stdReq)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	historySession := startChatHistory(h.ChatHistory, r, a, stdReq)
 
 	sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
@@ -155,7 +160,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	if searchEnabled {
 		finalText = replaceCitationMarkersWithLinks(finalText, result.CitationLinks)
 	}
-	if shouldWriteUpstreamEmptyOutputError(finalText, result.ContentFilter) {
+	if shouldWriteUpstreamEmptyOutputError(finalText) {
 		status, message, code := upstreamEmptyOutputDetail(result.ContentFilter, finalText, finalThinking)
 		if historySession != nil {
 			historySession.error(status, message, code, finalThinking, finalText)

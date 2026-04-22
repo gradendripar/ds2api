@@ -8,22 +8,23 @@ import (
 )
 
 type Config struct {
-	Keys             []string          `json:"keys,omitempty"`
-	APIKeys          []APIKey          `json:"api_keys,omitempty"`
-	Accounts         []Account         `json:"accounts,omitempty"`
-	Proxies          []Proxy           `json:"proxies,omitempty"`
-	ClaudeMapping    map[string]string `json:"claude_mapping,omitempty"`
-	ClaudeModelMap   map[string]string `json:"claude_model_mapping,omitempty"`
-	ModelAliases     map[string]string `json:"model_aliases,omitempty"`
-	Admin            AdminConfig       `json:"admin,omitempty"`
-	Runtime          RuntimeConfig     `json:"runtime,omitempty"`
-	Compat           CompatConfig      `json:"compat,omitempty"`
-	Responses        ResponsesConfig   `json:"responses,omitempty"`
-	Embeddings       EmbeddingsConfig  `json:"embeddings,omitempty"`
-	AutoDelete       AutoDeleteConfig  `json:"auto_delete"`
-	VercelSyncHash   string            `json:"_vercel_sync_hash,omitempty"`
-	VercelSyncTime   int64             `json:"_vercel_sync_time,omitempty"`
-	AdditionalFields map[string]any    `json:"-"`
+	Keys             []string           `json:"keys,omitempty"`
+	APIKeys          []APIKey           `json:"api_keys,omitempty"`
+	Accounts         []Account          `json:"accounts,omitempty"`
+	Proxies          []Proxy            `json:"proxies,omitempty"`
+	ClaudeMapping    map[string]string  `json:"claude_mapping,omitempty"`
+	ClaudeModelMap   map[string]string  `json:"claude_model_mapping,omitempty"`
+	ModelAliases     map[string]string  `json:"model_aliases,omitempty"`
+	Admin            AdminConfig        `json:"admin,omitempty"`
+	Runtime          RuntimeConfig      `json:"runtime,omitempty"`
+	Compat           CompatConfig       `json:"compat,omitempty"`
+	Responses        ResponsesConfig    `json:"responses,omitempty"`
+	Embeddings       EmbeddingsConfig   `json:"embeddings,omitempty"`
+	AutoDelete       AutoDeleteConfig   `json:"auto_delete"`
+	HistorySplit     HistorySplitConfig `json:"history_split"`
+	VercelSyncHash   string             `json:"_vercel_sync_hash,omitempty"`
+	VercelSyncTime   int64              `json:"_vercel_sync_time,omitempty"`
+	AdditionalFields map[string]any     `json:"-"`
 }
 
 type Account struct {
@@ -147,4 +148,9 @@ type EmbeddingsConfig struct {
 type AutoDeleteConfig struct {
 	Mode     string `json:"mode,omitempty"`
 	Sessions bool   `json:"sessions,omitempty"`
+}
+
+type HistorySplitConfig struct {
+	Enabled           *bool `json:"enabled,omitempty"`
+	TriggerAfterTurns *int  `json:"trigger_after_turns,omitempty"`
 }

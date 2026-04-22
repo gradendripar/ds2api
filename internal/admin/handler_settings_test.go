@@ -47,6 +47,25 @@ func TestGetSettingsIncludesTokenRefreshInterval(t *testing.T) {
 	}
 }
 
+func TestGetSettingsIncludesHistorySplitDefaults(t *testing.T) {
+	h := newAdminTestHandler(t, `{"keys":["k1"]}`)
+	req := httptest.NewRequest(http.MethodGet, "/admin/settings", nil)
+	rec := httptest.NewRecorder()
+	h.getSettings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	historySplit, _ := body["history_split"].(map[string]any)
+	if got := boolFrom(historySplit["enabled"]); !got {
+		t.Fatalf("expected history_split.enabled=true, body=%v", body)
+	}
+	if got := intFrom(historySplit["trigger_after_turns"]); got != 1 {
+		t.Fatalf("expected history_split.trigger_after_turns=1, got %d body=%v", got, body)
+	}
+}
+
 func TestUpdateSettingsValidation(t *testing.T) {
 	h := newAdminTestHandler(t, `{"keys":["k1"]}`)
 	payload := map[string]any{
@@ -151,6 +170,30 @@ func TestUpdateSettingsWithoutRuntimeSkipsMergedRuntimeValidation(t *testing.T) 
 	}
 	if got := h.Store.Snapshot().Responses.StoreTTLSeconds; got != 600 {
 		t.Fatalf("store_ttl_seconds=%d want=600", got)
+	}
+}
+
+func TestUpdateSettingsHistorySplit(t *testing.T) {
+	h := newAdminTestHandler(t, `{"keys":["k1"]}`)
+	payload := map[string]any{
+		"history_split": map[string]any{
+			"enabled":             false,
+			"trigger_after_turns": 3,
+		},
+	}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPut, "/admin/settings", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	h.updateSettings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	snap := h.Store.Snapshot()
+	if snap.HistorySplit.Enabled == nil || *snap.HistorySplit.Enabled {
+		t.Fatalf("expected history_split.enabled=false, got %#v", snap.HistorySplit.Enabled)
+	}
+	if snap.HistorySplit.TriggerAfterTurns == nil || *snap.HistorySplit.TriggerAfterTurns != 3 {
+		t.Fatalf("expected history_split.trigger_after_turns=3, got %#v", snap.HistorySplit.TriggerAfterTurns)
 	}
 }
 

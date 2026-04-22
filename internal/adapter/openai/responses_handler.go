@@ -85,6 +85,11 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	stdReq, err = h.applyHistorySplit(r.Context(), a, stdReq)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
 	if err != nil {

@@ -2,7 +2,7 @@ package openai
 
 import "net/http"
 
-func shouldWriteUpstreamEmptyOutputError(text string, contentFilter bool) bool {
+func shouldWriteUpstreamEmptyOutputError(text string) bool {
 	return text == ""
 }
 
@@ -18,7 +18,7 @@ func upstreamEmptyOutputDetail(contentFilter bool, text, thinking string) (int, 
 }
 
 func writeUpstreamEmptyOutputError(w http.ResponseWriter, text string, contentFilter bool) bool {
-	if !shouldWriteUpstreamEmptyOutputError(text, contentFilter) {
+	if !shouldWriteUpstreamEmptyOutputError(text) {
 		return false
 	}
 	status, message, code := upstreamEmptyOutputDetail(contentFilter, text, "")

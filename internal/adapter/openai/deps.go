@@ -34,6 +34,8 @@ type ConfigReader interface {
 	EmbeddingsProvider() string
 	AutoDeleteMode() string
 	AutoDeleteSessions() bool
+	HistorySplitEnabled() bool
+	HistorySplitTriggerAfterTurns() int
 }
 
 var _ AuthResolver = (*auth.Resolver)(nil)
