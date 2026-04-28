@@ -6,7 +6,11 @@ const {
 const {
   parseChunkForContent,
   extractContentRecursive,
+  filterLeakedContentFilterParts,
+  hasContentFilterStatus,
+  extractAccumulatedTokenUsage,
   shouldSkipPath,
+  stripReferenceMarkers,
 } = require('./sse_parse');
 const {
   resolveToolcallPolicy,
@@ -14,9 +18,11 @@ const {
   normalizePreparedToolNames,
   boolDefaultTrue,
   filterIncrementalToolCallDeltasByAllowed,
+  resetStreamToolCallState,
 } = require('./toolcall_policy');
 const {
   estimateTokens,
+  buildUsage,
 } = require('./token_usage');
 const {
   setCorsHeaders,
@@ -29,9 +35,12 @@ const {
 const {
   handleVercelStream,
 } = require('./vercel_stream');
+const {
+  trimContinuationOverlap,
+} = require('./dedupe');
 
 async function handler(req, res) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
     res.end();
@@ -59,8 +68,9 @@ async function handler(req, res) {
     return;
   }
 
-  // Keep all non-stream behavior on Go side to avoid compatibility regressions.
-  if (!toBool(payload.stream)) {
+  // Keep all non-stream behavior and non-OpenAI-chat paths on Go side to avoid
+  // protocol-shape regressions (e.g. Gemini/Claude clients expecting their own formats).
+  if (!toBool(payload.stream) || !isNodeStreamSupportedPath(req.url || '')) {
     await proxyToGo(req, res, rawBody);
     return;
   }
@@ -76,17 +86,43 @@ function isVercelRuntime() {
   return asString(process.env.VERCEL) !== '' || asString(process.env.NOW_REGION) !== '';
 }
 
+function isNodeStreamSupportedPath(rawURL) {
+  const path = extractPathname(rawURL);
+  return path === '/v1/chat/completions';
+}
+
+function extractPathname(rawURL) {
+  const text = asString(rawURL);
+  if (!text) {
+    return '';
+  }
+  const q = text.indexOf('?');
+  if (q >= 0) {
+    return text.slice(0, q);
+  }
+  return text;
+}
+
 module.exports = handler;
 
 module.exports.__test = {
   parseChunkForContent,
   extractContentRecursive,
   shouldSkipPath,
+  stripReferenceMarkers,
   asString,
   resolveToolcallPolicy,
   formatIncrementalToolCallDeltas,
   normalizePreparedToolNames,
   boolDefaultTrue,
   filterIncrementalToolCallDeltasByAllowed,
+  resetStreamToolCallState,
   estimateTokens,
+  buildUsage,
+  filterLeakedContentFilterParts,
+  hasContentFilterStatus,
+  extractAccumulatedTokenUsage,
+  isNodeStreamSupportedPath,
+  extractPathname,
+  trimContinuationOverlap,
 };

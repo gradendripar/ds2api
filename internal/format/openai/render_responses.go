@@ -1,24 +1,27 @@
 package openai
 
 import (
+	"ds2api/internal/toolcall"
 	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-
-	"ds2api/internal/util"
 )
 
-func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string) map[string]any {
+func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, toolsRaw any) map[string]any {
 	// Strict mode: only standalone, structured tool-call payloads are treated
 	// as executable tool calls.
-	detected := util.ParseStandaloneToolCallsDetailed(finalText, toolNames)
+	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
+	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls, toolsRaw)
+}
+
+func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall, toolsRaw any) map[string]any {
 	exposedOutputText := finalText
 	output := make([]any, 0, 2)
-	if len(detected.Calls) > 0 {
+	if len(detected) > 0 {
 		exposedOutputText = ""
-		output = append(output, toResponsesFunctionCallItems(detected.Calls)...)
+		output = append(output, toResponsesFunctionCallItems(detected, toolsRaw)...)
 	} else {
 		content := make([]any, 0, 2)
 		if finalThinking != "" {
@@ -71,12 +74,13 @@ func BuildResponseObjectFromItems(responseID, model, finalPrompt, finalThinking,
 	}
 }
 
-func toResponsesFunctionCallItems(toolCalls []util.ParsedToolCall) []any {
+func toResponsesFunctionCallItems(toolCalls []toolcall.ParsedToolCall, toolsRaw any) []any {
 	if len(toolCalls) == 0 {
 		return nil
 	}
+	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(toolCalls, toolsRaw)
 	out := make([]any, 0, len(toolCalls))
-	for _, tc := range toolCalls {
+	for _, tc := range normalizedCalls {
 		if strings.TrimSpace(tc.Name) == "" {
 			continue
 		}

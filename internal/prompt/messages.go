@@ -9,7 +9,22 @@ import (
 
 var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
 
+const (
+	beginSentenceMarker   = "<｜begin▁of▁sentence｜>"
+	systemMarker          = "<｜System｜>"
+	userMarker            = "<｜User｜>"
+	assistantMarker       = "<｜Assistant｜>"
+	toolMarker            = "<｜Tool｜>"
+	endSentenceMarker     = "<｜end▁of▁sentence｜>"
+	endToolResultsMarker  = "<｜end▁of▁toolresults｜>"
+	endInstructionsMarker = "<｜end▁of▁instructions｜>"
+)
+
 func MessagesPrepare(messages []map[string]any) string {
+	return MessagesPrepareWithThinking(messages, false)
+}
+
+func MessagesPrepareWithThinking(messages []map[string]any, thinkingEnabled bool) string {
 	type block struct {
 		Role string
 		Text string
@@ -31,23 +46,46 @@ func MessagesPrepare(messages []map[string]any) string {
 		}
 		merged = append(merged, msg)
 	}
-	parts := make([]string, 0, len(merged))
-	for i, m := range merged {
+	parts := make([]string, 0, len(merged)+2)
+	parts = append(parts, beginSentenceMarker)
+	lastRole := ""
+	for _, m := range merged {
+		lastRole = m.Role
 		switch m.Role {
 		case "assistant":
-			parts = append(parts, "<｜Assistant｜>"+m.Text+"<｜end▁of▁sentence｜>")
-		case "user", "system":
-			if i > 0 {
-				parts = append(parts, "<｜User｜>"+m.Text)
-			} else {
+			parts = append(parts, formatRoleBlock(assistantMarker, m.Text, endSentenceMarker))
+		case "tool":
+			if strings.TrimSpace(m.Text) != "" {
+				parts = append(parts, formatRoleBlock(toolMarker, m.Text, endToolResultsMarker))
+			}
+		case "system":
+			if text := strings.TrimSpace(m.Text); text != "" {
+				parts = append(parts, formatRoleBlock(systemMarker, text, endInstructionsMarker))
+			}
+		case "user":
+			parts = append(parts, formatRoleBlock(userMarker, m.Text, ""))
+		default:
+			if strings.TrimSpace(m.Text) != "" {
 				parts = append(parts, m.Text)
 			}
-		default:
-			parts = append(parts, m.Text)
 		}
+	}
+	if lastRole != "assistant" {
+		parts = append(parts, assistantMarker)
 	}
 	out := strings.Join(parts, "")
 	return markdownImagePattern.ReplaceAllString(out, `[${1}](${2})`)
+}
+
+// formatRoleBlock produces a single concatenated block: marker + text + endMarker.
+// No whitespace is inserted between marker and text so role boundaries stay
+// compact and predictable for downstream parsers.
+func formatRoleBlock(marker, text, endMarker string) string {
+	out := marker + text
+	if strings.TrimSpace(endMarker) != "" {
+		out += endMarker
+	}
+	return out
 }
 
 func NormalizeContent(v any) string {

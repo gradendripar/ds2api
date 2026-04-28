@@ -4,6 +4,8 @@ Language: [中文](API.md) | [English](API.en.md)
 
 This document describes the actual behavior of the current Go codebase.
 
+Docs: [Overview](README.en.md) / [Architecture](docs/ARCHITECTURE.en.md) / [Deployment](docs/DEPLOY.en.md) / [Testing](docs/TESTING.md)
+
 ---
 
 ## Table of Contents
@@ -29,7 +31,14 @@ This document describes the actual behavior of the current Go codebase.
 | Base URL | `http://localhost:5001` or your deployment domain |
 | Default Content-Type | `application/json` |
 | Health probes | `GET /healthz`, `GET /readyz` |
-| CORS | Enabled (`Access-Control-Allow-Origin: *`, allows `Content-Type`, `Authorization`, `X-API-Key`, `X-Ds2-Target-Account`, `X-Vercel-Protection-Bypass`) |
+| CORS | Enabled (uniformly covers `/v1/*`, `/anthropic/*`, `/v1beta/models/*`, and `/admin/*`; echoes the browser `Origin` when present, otherwise `*`; default allow-list includes `Content-Type`, `Authorization`, `X-API-Key`, `X-Ds2-Target-Account`, `X-Ds2-Source`, `X-Vercel-Protection-Bypass`, `X-Goog-Api-Key`, `Anthropic-Version`, `Anthropic-Beta`, and also accepts third-party preflight-requested headers such as `x-stainless-*`; `/v1/chat/completions` on Vercel Node Runtime matches the same behavior; internal-only `X-Ds2-Internal-Token` remains blocked) |
+
+### 3.0 Adapter-Layer Notes
+
+- OpenAI / Claude / Gemini protocols are now mounted on one shared `chi` router tree assembled in `internal/server/router.go`.
+- Adapter responsibilities are streamlined to: **request normalization → DeepSeek invocation → protocol-shaped rendering**, reducing legacy split-logic paths.
+- Tool-calling semantics are aligned between Go and Node runtime: models should output the DSML shell `<|DSML|tool_calls>` → `<|DSML|invoke name="...">` → `<|DSML|parameter name="...">`; DS2API also accepts legacy canonical XML `<tool_calls>` → `<invoke name="...">` → `<parameter name="...">`. DSML is normalized back to XML at the parser entry, so internal parsing remains XML-based, with stream-time anti-leak filtering.
+- `Admin API` separates static config from runtime policy: `/admin/config*` for configuration state, `/admin/settings*` for runtime behavior.
 
 ---
 
@@ -45,7 +54,7 @@ cp config.example.json config.json
 Use it per deployment mode:
 
 - Local run: read `config.json` directly
-- Docker / Vercel: generate Base64 from `config.json`, then set `DS2API_CONFIG_JSON`
+- Docker / Vercel: generate Base64 from `config.json`, then set `DS2API_CONFIG_JSON`, or paste raw JSON directly
 
 ```bash
 DS2API_CONFIG_JSON="$(base64 < config.json | tr -d '\n')"
@@ -65,6 +74,7 @@ Two header formats accepted:
 | --- | --- |
 | Bearer Token | `Authorization: Bearer <token>` |
 | API Key Header | `x-api-key: <token>` (no `Bearer` prefix) |
+| Gemini-compatible | `x-goog-api-key: <token>` or `?key=<token>` / `?api_key=<token>` |
 
 **Auth behavior**:
 
@@ -72,6 +82,7 @@ Two header formats accepted:
 - Token is not in `config.keys` → **Direct token mode**: treated as a DeepSeek token directly
 
 **Optional header**: `X-Ds2-Target-Account: <email_or_mobile>` — Pin a specific managed account.
+Gemini-compatible clients can also send `x-goog-api-key`, `?key=`, or `?api_key=` as the caller credential source.
 
 ### Admin Endpoints (`/admin/*`)
 
@@ -88,13 +99,16 @@ Two header formats accepted:
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | GET | `/healthz` | None | Liveness probe |
+| HEAD | `/healthz` | None | Liveness probe (no body) |
 | GET | `/readyz` | None | Readiness probe |
+| HEAD | `/readyz` | None | Readiness probe (no body) |
 | GET | `/v1/models` | None | OpenAI model list |
 | GET | `/v1/models/{id}` | None | OpenAI single-model query (alias accepted) |
 | POST | `/v1/chat/completions` | Business | OpenAI chat completions |
 | POST | `/v1/responses` | Business | OpenAI Responses API (stream/non-stream) |
 | GET | `/v1/responses/{response_id}` | Business | Query stored response (in-memory TTL) |
 | POST | `/v1/embeddings` | Business | OpenAI Embeddings API |
+| POST | `/v1/files` | Business | OpenAI Files upload (multipart/form-data) |
 | GET | `/anthropic/v1/models` | None | Claude model list |
 | POST | `/anthropic/v1/messages` | Business | Claude messages |
 | POST | `/anthropic/v1/messages/count_tokens` | Business | Claude token counting |
@@ -116,21 +130,40 @@ Two header formats accepted:
 | POST | `/admin/settings/password` | Admin | Update admin password and invalidate old JWTs |
 | POST | `/admin/config/import` | Admin | Import config (merge/replace) |
 | GET | `/admin/config/export` | Admin | Export full config (`config`/`json`/`base64`) |
-| POST | `/admin/keys` | Admin | Add API key |
+| POST | `/admin/keys` | Admin | Add API key (optional `name`/`remark`) |
+| PUT | `/admin/keys/{key}` | Admin | Update API key metadata |
 | DELETE | `/admin/keys/{key}` | Admin | Delete API key |
+| GET | `/admin/proxies` | Admin | List proxies |
+| POST | `/admin/proxies` | Admin | Add proxy |
+| PUT | `/admin/proxies/{proxyID}` | Admin | Update proxy (empty password keeps old secret) |
+| DELETE | `/admin/proxies/{proxyID}` | Admin | Delete proxy (auto-unbind referenced accounts) |
+| POST | `/admin/proxies/test` | Admin | Test proxy connectivity |
 | GET | `/admin/accounts` | Admin | Paginated account list |
 | POST | `/admin/accounts` | Admin | Add account |
+| PUT | `/admin/accounts/{identifier}` | Admin | Update account name/remark |
 | DELETE | `/admin/accounts/{identifier}` | Admin | Delete account |
+| PUT | `/admin/accounts/{identifier}/proxy` | Admin | Bind/unbind proxy for an account |
 | GET | `/admin/queue/status` | Admin | Account queue status |
 | POST | `/admin/accounts/test` | Admin | Test one account |
 | POST | `/admin/accounts/test-all` | Admin | Test all accounts |
+| POST | `/admin/accounts/sessions/delete-all` | Admin | Delete all sessions for one account |
 | POST | `/admin/import` | Admin | Batch import keys/accounts |
 | POST | `/admin/test` | Admin | Test API through service |
+| POST | `/admin/dev/raw-samples/capture` | Admin | Fire one request and persist it as a raw sample |
+| GET | `/admin/dev/raw-samples/query` | Admin | Search current in-memory capture chains by prompt keyword |
+| POST | `/admin/dev/raw-samples/save` | Admin | Persist a selected in-memory capture chain as a raw sample |
 | POST | `/admin/vercel/sync` | Admin | Sync config to Vercel |
 | GET | `/admin/vercel/status` | Admin | Vercel sync status |
+| POST | `/admin/vercel/status` | Admin | Vercel sync status / draft compare |
 | GET | `/admin/export` | Admin | Export config JSON/Base64 |
 | GET | `/admin/dev/captures` | Admin | Read local packet-capture entries |
 | DELETE | `/admin/dev/captures` | Admin | Clear local packet-capture entries |
+| GET | `/admin/chat-history` | Admin | Read server-side conversation history |
+| DELETE | `/admin/chat-history` | Admin | Clear server-side conversation history |
+| GET | `/admin/chat-history/{id}` | Admin | Read one server-side conversation entry |
+| DELETE | `/admin/chat-history/{id}` | Admin | Delete one server-side conversation entry |
+| PUT | `/admin/chat-history/settings` | Admin | Update conversation history retention limit |
+| GET | `/admin/version` | Admin | Check current version and latest Release |
 
 ---
 
@@ -154,7 +187,7 @@ Two header formats accepted:
 
 ### `GET /v1/models`
 
-No auth required. Returns supported models.
+No auth required. Returns the currently supported DeepSeek native model list.
 
 **Response**:
 
@@ -162,13 +195,17 @@ No auth required. Returns supported models.
 {
   "object": "list",
   "data": [
-    {"id": "deepseek-chat", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
-    {"id": "deepseek-reasoner", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
-    {"id": "deepseek-chat-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
-    {"id": "deepseek-reasoner-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []}
+    {"id": "deepseek-v4-flash", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-pro", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-flash-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-pro-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-vision", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-vision-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []}
   ]
 }
 ```
+
+> Note: `/v1/models` returns normalized DeepSeek native model IDs. Common aliases are accepted only as request input and are not expanded as separate items in this endpoint.
 
 ### Model Alias Resolution
 
@@ -178,6 +215,16 @@ For `chat` / `responses` / `embeddings`, DS2API follows a wide-input/strict-outp
 2. Then match exact keys in `model_aliases`.
 3. If still unmatched, fall back by known family heuristics (`o*`, `gpt-*`, `claude-*`, etc.).
 4. If still unmatched, return `invalid_request_error`.
+
+Built-in aliases come from `internal/config/models.go`; `config.model_aliases` can override or add mappings at runtime. Excerpt:
+
+- OpenAI / Codex: `gpt-4o`, `gpt-4.1`, `gpt-5`, `gpt-5.5`, `gpt-5-codex`, `gpt-5.3-codex`, `codex-mini-latest`
+- OpenAI reasoning: `o1`, `o3`, `o3-deep-research`, `o4-mini`
+- Claude: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `claude-3-5-sonnet-latest`
+- Gemini: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-pro-vision`
+- Other compatibility families: `llama-*`, `qwen-*`, `mistral-*`, and `command-*` fall back through family heuristics
+
+Retired historical families such as `claude-1.*`, `claude-2.*`, `claude-instant-*`, and `gpt-3.5*` are explicitly rejected.
 
 ### `POST /v1/chat/completions`
 
@@ -192,7 +239,7 @@ Content-Type: application/json
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | DeepSeek native models + common aliases (`gpt-4o`, `gpt-5-codex`, `o3`, `claude-sonnet-4-5`, etc.) |
+| `model` | string | ✅ | DeepSeek native models + common aliases (`gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex`, `o3`, `claude-opus-4-6`, `gemini-2.5-pro`, `gemini-2.5-flash`, etc.) |
 | `messages` | array | ✅ | OpenAI-style messages |
 | `stream` | boolean | ❌ | Default `false` |
 | `tools` | array | ❌ | Function calling schema |
@@ -205,14 +252,14 @@ Content-Type: application/json
   "id": "<chat_session_id>",
   "object": "chat.completion",
   "created": 1738400000,
-  "model": "deepseek-reasoner",
+  "model": "deepseek-v4-pro",
   "choices": [
     {
       "index": 0,
       "message": {
         "role": "assistant",
         "content": "final response",
-        "reasoning_content": "reasoning trace (reasoner models)"
+        "reasoning_content": "reasoning trace (when thinking is enabled)"
       },
       "finish_reason": "stop"
     }
@@ -247,9 +294,10 @@ data: [DONE]
 **Field notes**:
 
 - First delta includes `role: assistant`
-- `deepseek-reasoner` / `deepseek-reasoner-search` models emit `delta.reasoning_content`
+- When thinking is enabled, the stream may emit `delta.reasoning_content`
 - Text emits `delta.content`
 - Last chunk includes `finish_reason` and `usage`
+- Token counting prefers pass-through from upstream DeepSeek SSE (`accumulated_token_usage` / `token_usage`), and only falls back to local estimation when upstream usage is absent
 
 #### Tool Calls
 
@@ -282,7 +330,13 @@ When `tools` is present, DS2API performs anti-leak handling:
 }
 ```
 
-**Stream**: Once high-confidence toolcall features are matched, DS2API emits `delta.tool_calls` immediately (without waiting for full JSON closure), then keeps sending argument deltas; confirmed raw tool JSON is never forwarded as `delta.content`.
+**Stream**: Once high-confidence toolcall features are matched, DS2API emits `delta.tool_calls` immediately (without waiting for full argument closure), then keeps sending argument deltas; confirmed tool-call fragments are not forwarded as `delta.content`.
+
+Additional notes:
+
+- The parser treats DSML shell tool blocks (`<|DSML|tool_calls>` / `<|DSML|invoke name="...">` / `<|DSML|parameter name="...">`) and legacy canonical XML tool blocks (`<tool_calls>` / `<invoke name="...">` / `<parameter name="...">`) as executable tool calls. DSML is normalized back to XML at the parser entry; internal parsing remains XML-based. Legacy `<tools>`, `<tool_call>`, `<tool_name>`, `<param>`, `<function_call>`, `tool_use`, antml variants, and standalone JSON `tool_calls` payloads are treated as plain text.
+- If the final visible response text is empty but the reasoning stream contains an executable tool call, Chat / Responses emits a standard OpenAI `tool_calls` / `function_call` output during finalization. If thinking/reasoning was not enabled by the client, that reasoning text is used only for detection and is not exposed as visible text or `reasoning_content`.
+- `tool_calls` shown inside fenced markdown code blocks (for example, ```json ... ```) are treated as examples, not executable calls.
 
 ---
 
@@ -341,7 +395,8 @@ data: [DONE]
 ```
 
 If `tool_choice=required` is violated in stream mode, DS2API emits `response.failed` then `[DONE]` (no `response.completed`).
-Unknown tool names (outside declared `tools`) are rejected and will not be emitted as valid tool calls.
+
+> Current behavior: the parser tries to extract structured tool calls and does not enforce a hard allow-list reject; your tool executor should still validate against a whitelist before executing.
 
 ### `GET /v1/responses/{response_id}`
 
@@ -360,11 +415,27 @@ Business auth required. Returns OpenAI-compatible embeddings shape.
 
 > Requires `embeddings.provider`. Current supported values: `mock` / `deterministic` / `builtin`. If missing/unsupported, returns standard error shape with HTTP 501.
 
+### `POST /v1/files`
+
+Business auth required. OpenAI Files-compatible upload endpoint; currently only `multipart/form-data` is supported.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `file` | file | ✅ | Binary payload |
+| `purpose` | string | ❌ | Forwarded purpose field |
+
+Constraints and behavior:
+
+- `Content-Type` must be `multipart/form-data` (otherwise `400`).
+- Total request size limit is `100 MiB` (over-limit returns `413`).
+- Success returns an OpenAI `file` object (`id/object/bytes/filename/purpose/status`, etc.) and includes `account_id` for source-account tracing.
+
 ---
 
 ## Claude-Compatible API
 
 Besides `/anthropic/v1/*`, DS2API also supports shortcut paths: `/v1/messages`, `/messages`, `/v1/messages/count_tokens`, `/messages/count_tokens`.
+Implementation-wise this path is unified on the OpenAI Chat Completions parse-and-translate pipeline to avoid maintaining divergent parsing chains.
 
 ### `GET /anthropic/v1/models`
 
@@ -376,17 +447,17 @@ No auth required.
 {
   "object": "list",
   "data": [
-    {"id": "claude-sonnet-4-5", "object": "model", "created": 1715635200, "owned_by": "anthropic"},
+    {"id": "claude-sonnet-4-6", "object": "model", "created": 1715635200, "owned_by": "anthropic"},
     {"id": "claude-haiku-4-5", "object": "model", "created": 1715635200, "owned_by": "anthropic"},
     {"id": "claude-opus-4-6", "object": "model", "created": 1715635200, "owned_by": "anthropic"}
   ],
   "first_id": "claude-opus-4-6",
-  "last_id": "claude-instant-1.0",
+  "last_id": "claude-3-haiku-20240307",
   "has_more": false
 }
 ```
 
-> Note: the example is partial; the real response includes historical Claude 1.x/2.x/3.x/4.x IDs and common aliases.
+> Note: the example is partial; besides the current primary aliases, the real response also includes Claude 4.x snapshots plus historical 3.x IDs and common aliases.
 
 ### `POST /anthropic/v1/messages`
 
@@ -404,7 +475,7 @@ anthropic-version: 2023-06-01
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | For example `claude-sonnet-4-5` / `claude-opus-4-6` / `claude-haiku-4-5` (compatible with `claude-3-5-haiku-latest`), plus historical Claude model IDs |
+| `model` | string | ✅ | For example `claude-sonnet-4-6` / `claude-opus-4-6` / `claude-haiku-4-5` (compatible with `claude-3-5-haiku-latest`), plus historical Claude model IDs |
 | `messages` | array | ✅ | Claude-style messages |
 | `max_tokens` | number | ❌ | Auto-filled to `8192` when omitted; not strictly enforced by upstream bridge |
 | `stream` | boolean | ❌ | Default `false` |
@@ -418,7 +489,7 @@ anthropic-version: 2023-06-01
   "id": "msg_1738400000000000000",
   "type": "message",
   "role": "assistant",
-  "model": "claude-sonnet-4-5",
+  "model": "claude-sonnet-4-6",
   "content": [
     {"type": "text", "text": "response"}
   ],
@@ -472,7 +543,7 @@ data: {"type":"message_stop"}
 
 ```json
 {
-  "model": "claude-sonnet-4-5",
+  "model": "claude-sonnet-4-6",
   "messages": [
     {"role": "user", "content": "Hello"}
   ]
@@ -499,6 +570,7 @@ Supported paths:
 - `/v1/models/{model}:streamGenerateContent` (compat path)
 
 Authentication is the same as other business routes (`Authorization: Bearer <token>` or `x-api-key`).
+Implementation-wise this path is unified on the OpenAI Chat Completions parse-and-translate pipeline to avoid maintaining divergent parsing chains.
 
 ### `POST /v1beta/models/{model}:generateContent`
 
@@ -517,6 +589,7 @@ Returns SSE (`text/event-stream`), each chunk as `data: <json>`:
 - regular text: incremental text chunks
 - `tools` mode: buffered and emitted as `functionCall` at finalize phase
 - final chunk: includes `finishReason: "STOP"` and `usageMetadata`
+- Token counting prefers pass-through from upstream DeepSeek SSE (`accumulated_token_usage` / `token_usage`), and only falls back to local estimation when upstream usage is absent
 
 ---
 
@@ -575,11 +648,19 @@ Returns Vercel preconfiguration status.
 
 ### `GET /admin/config`
 
-Returns sanitized config.
+Returns sanitized config, including both `keys` and `api_keys`.
 
 ```json
 {
   "keys": ["k1", "k2"],
+  "api_keys": [
+    {"key": "k1", "name": "Primary", "remark": "Production"},
+    {"key": "k2", "name": "Backup", "remark": "Load test"}
+  ],
+  "env_backed": false,
+  "env_source_present": true,
+  "env_writeback_enabled": true,
+  "config_path": "/data/config.json",
   "accounts": [
     {
       "identifier": "user@example.com",
@@ -590,28 +671,33 @@ Returns sanitized config.
       "token_preview": "abcde..."
     }
   ],
-  "claude_mapping": {
-    "fast": "deepseek-chat",
-    "slow": "deepseek-reasoner"
+  "model_aliases": {
+    "claude-sonnet-4-6": "deepseek-v4-flash",
+    "claude-opus-4-6": "deepseek-v4-pro"
   }
 }
 ```
 
 ### `POST /admin/config`
 
-Updatable fields: `keys`, `accounts`, `claude_mapping`.
+Only updates `keys`, `api_keys`, `accounts`, and `model_aliases`.
+If both `api_keys` and `keys` are sent, the structured `api_keys` entries win so `name` / `remark` metadata is preserved; `keys` remains a legacy fallback.
 
 **Request**:
 
 ```json
 {
   "keys": ["k1", "k2"],
+  "api_keys": [
+    {"key": "k1", "name": "Primary", "remark": "Production"},
+    {"key": "k2", "name": "Backup", "remark": "Load test"}
+  ],
   "accounts": [
     {"email": "user@example.com", "password": "pwd", "token": ""}
   ],
-  "claude_mapping": {
-    "fast": "deepseek-chat",
-    "slow": "deepseek-reasoner"
+  "model_aliases": {
+    "claude-sonnet-4-6": "deepseek-v4-flash",
+    "claude-opus-4-6": "deepseek-v4-pro"
   }
 }
 ```
@@ -620,23 +706,31 @@ Updatable fields: `keys`, `accounts`, `claude_mapping`.
 
 Reads runtime settings and status, including:
 
-- `admin` (JWT expiry, default-password warning, etc.)
-- `runtime` (`account_max_inflight`, `account_max_queue`, `global_max_inflight`)
-- `toolcall` / `responses` / `embeddings`
-- `claude_mapping` / `model_aliases`
+- `success`
+- `admin` (`has_password_hash`, `jwt_expire_hours`, `jwt_valid_after_unix`, `default_password_warning`)
+- `runtime` (`account_max_inflight`, `account_max_queue`, `global_max_inflight`, `token_refresh_interval_hours`)
+- `compat` (`wide_input_strict_output`, `strip_reference_markers`)
+- `responses` / `embeddings`
+- `auto_delete` (`mode`: `none` / `single` / `all`; legacy `sessions=true` is still treated as `all`)
+- `current_input_file` (`enabled` defaults to `true`, plus `min_chars`)
+- `model_aliases`
 - `env_backed`, `needs_vercel_sync`
+- `toolcall` policy is fixed to `feature_match + high` and is no longer returned or editable via settings
 
 ### `PUT /admin/settings`
 
 Hot-updates runtime settings. Supported fields:
 
 - `admin.jwt_expire_hours`
-- `runtime.account_max_inflight` / `runtime.account_max_queue` / `runtime.global_max_inflight`
-- `toolcall.mode` / `toolcall.early_emit_confidence`
+- `runtime.account_max_inflight` / `runtime.account_max_queue` / `runtime.global_max_inflight` / `runtime.token_refresh_interval_hours`
+- `compat.wide_input_strict_output` / `compat.strip_reference_markers`
 - `responses.store_ttl_seconds`
 - `embeddings.provider`
-- `claude_mapping`
+- `auto_delete.mode`
+- `current_input_file.enabled` / `current_input_file.min_chars`
 - `model_aliases`
+- `history_split` is retained only for legacy config compatibility and no longer affects requests
+- `toolcall` policy is fixed and is no longer writable through settings
 
 ### `POST /admin/settings/password`
 
@@ -648,6 +742,8 @@ Request example:
 {"new_password":"your-new-password"}
 ```
 
+It also accepts `{"password":"your-new-password"}`.
+
 ### `POST /admin/config/import`
 
 Imports full config with:
@@ -656,6 +752,10 @@ Imports full config with:
 - `mode=replace`
 
 The request can send config directly, or wrapped as `{"config": {...}, "mode":"merge"}`.
+Query params `?mode=merge` / `?mode=replace` are also supported.
+`replace` mode replaces the full config shape while preserving Vercel sync metadata. `merge` mode merges `keys`, `api_keys`, `accounts`, and `model_aliases`, and overwrites non-empty fields under `admin`, `runtime`, `responses`, and `embeddings`. Manage `compat`, `auto_delete`, and `current_input_file` via `/admin/settings` or the config file; `history_split` remains only for legacy compatibility; legacy `toolcall` fields are ignored.
+
+> Note: `merge` mode does not update `compat`, `auto_delete`, or `current_input_file`.
 
 ### `GET /admin/config/export`
 
@@ -664,7 +764,17 @@ Exports full config in three forms: `config`, `json`, and `base64`.
 ### `POST /admin/keys`
 
 ```json
-{"key": "new-api-key"}
+{"key": "new-api-key", "name": "Primary", "remark": "Production"}
+```
+
+**Response**: `{"success": true, "total_keys": 3}`
+
+### `PUT /admin/keys/{key}`
+
+Updates the `name` / `remark` of the specified API key. The path `key` is read-only and cannot be changed.
+
+```json
+{"name": "Backup", "remark": "Load test"}
 ```
 
 **Response**: `{"success": true, "total_keys": 3}`
@@ -673,6 +783,26 @@ Exports full config in three forms: `config`, `json`, and `base64`.
 
 **Response**: `{"success": true, "total_keys": 2}`
 
+### `GET /admin/proxies`
+
+Lists proxy configs (password is never returned; use `has_password` as a marker).
+
+### `POST /admin/proxies`
+
+Adds a proxy. Request accepts `id` (optional; auto-generated when omitted), `name`, `type` (`http` / `socks5`), `host`, `port`, `username`, `password`.
+
+### `PUT /admin/proxies/{proxyID}`
+
+Updates a proxy. If `password` is an empty string, the existing secret is preserved.
+
+### `DELETE /admin/proxies/{proxyID}`
+
+Deletes a proxy and automatically clears `proxy_id` on all accounts that reference it.
+
+### `POST /admin/proxies/test`
+
+Tests proxy connectivity: provide `proxy_id` to test a saved proxy; omit it to run a one-off test using proxy fields in the request body.
+
 ### `GET /admin/accounts`
 
 **Query params**:
@@ -680,7 +810,8 @@ Exports full config in three forms: `config`, `json`, and `base64`.
 | Param | Default | Range |
 | --- | --- | --- |
 | `page` | `1` | ≥ 1 |
-| `page_size` | `10` | 1–100 |
+| `page_size` | `10` | 1–5000 |
+| `q` | empty | Filter by identifier / email / mobile |
 
 **Response**:
 
@@ -693,7 +824,8 @@ Exports full config in three forms: `config`, `json`, and `base64`.
       "mobile": "",
       "has_password": true,
       "has_token": true,
-      "token_preview": "abc..."
+      "token_preview": "abc...",
+      "test_status": "ok"
     }
   ],
   "total": 25,
@@ -703,10 +835,22 @@ Exports full config in three forms: `config`, `json`, and `base64`.
 }
 ```
 
+Returned items also include `test_status`, usually `ok` or `failed`.
+
 ### `POST /admin/accounts`
 
 ```json
 {"email": "user@example.com", "password": "pwd"}
+```
+
+**Response**: `{"success": true, "total_accounts": 6}`
+
+### `PUT /admin/accounts/{identifier}`
+
+Updates the `name` / `remark` of the specified account. The path `identifier` can be email or mobile and cannot be changed.
+
+```json
+{"name": "Primary account", "remark": "Shared with the team"}
 ```
 
 **Response**: `{"success": true, "total_accounts": 6}`
@@ -716,6 +860,14 @@ Exports full config in three forms: `config`, `json`, and `base64`.
 `identifier` can be email, mobile, or the synthetic id for token-only accounts (`token:<hash>`).
 
 **Response**: `{"success": true, "total_accounts": 5}`
+
+### `PUT /admin/accounts/{identifier}/proxy`
+
+Updates proxy binding for a specific account.
+
+- Request body: `{"proxy_id":"..."}`.
+- Use empty `proxy_id` to unbind proxy.
+- `identifier` supports email / mobile / token-only synthetic id.
 
 ### `GET /admin/queue/status`
 
@@ -727,24 +879,32 @@ Exports full config in three forms: `config`, `json`, and `base64`.
   "available_accounts": ["a@example.com"],
   "in_use_accounts": ["b@example.com"],
   "max_inflight_per_account": 2,
-  "recommended_concurrency": 8
+  "global_max_inflight": 8,
+  "recommended_concurrency": 8,
+  "waiting": 0,
+  "max_queue_size": 8
 }
 ```
 
 | Field | Description |
 | --- | --- |
-| `available` | Currently available accounts |
-| `in_use` | Currently in-use accounts |
+| `available` | Accounts that still have spare inflight capacity |
+| `in_use` | Number of occupied in-flight slots |
 | `total` | Total accounts |
+| `available_accounts` | List of account IDs with remaining inflight capacity |
+| `in_use_accounts` | List of account IDs currently in use |
 | `max_inflight_per_account` | Per-account inflight limit |
+| `global_max_inflight` | Global inflight limit |
 | `recommended_concurrency` | Suggested concurrency (`total × max_inflight_per_account`) |
+| `waiting` | Number of queued requests currently waiting |
+| `max_queue_size` | Waiting queue limit |
 
 ### `POST /admin/accounts/test`
 
 | Field | Required | Notes |
 | --- | --- | --- |
 | `identifier` | ✅ | email / mobile / token-only synthetic id |
-| `model` | ❌ | default `deepseek-chat` |
+| `model` | ❌ | default `deepseek-v4-flash` |
 | `message` | ❌ | if empty, only session creation is tested |
 
 **Response**:
@@ -755,9 +915,13 @@ Exports full config in three forms: `config`, `json`, and `base64`.
   "success": true,
   "response_time": 1240,
   "message": "API test successful (session creation only)",
-  "model": "deepseek-chat"
+  "model": "deepseek-v4-flash",
+  "session_count": 0,
+  "config_writable": true
 }
 ```
+
+If a `message` is provided, `thinking` may also be included when the upstream response carries reasoning text.
 
 ### `POST /admin/accounts/test-all`
 
@@ -771,6 +935,25 @@ Optional request field: `model`.
   "results": [...]
 }
 ```
+
+The internal concurrency limit is currently fixed at 5.
+
+### `POST /admin/accounts/sessions/delete-all`
+
+Deletes all DeepSeek sessions for a specific account. Request example:
+
+```json
+{"identifier":"user@example.com"}
+```
+
+Response:
+
+```json
+{"success": true, "message": "删除成功"}
+```
+
+If the account is missing or deletion fails, `success` becomes `false` and `message` contains the error.
+The current handler returns the Chinese literal `删除成功` on success.
 
 ### `POST /admin/import`
 
@@ -803,7 +986,7 @@ Test API availability through the service itself.
 
 | Field | Required | Default |
 | --- | --- | --- |
-| `model` | ❌ | `deepseek-chat` |
+| `model` | ❌ | `deepseek-v4-flash` |
 | `message` | ❌ | `你好` |
 | `api_key` | ❌ | First key in config |
 
@@ -816,6 +999,74 @@ Test API availability through the service itself.
   "response": {"id": "..."}
 }
 ```
+
+### `POST /admin/dev/raw-samples/capture`
+
+Internally issues one `/v1/chat/completions` request through the service, then persists the request metadata and raw upstream SSE into `tests/raw_stream_samples/<sample-id>/`.
+
+Common request fields:
+
+| Field | Required | Default | Notes |
+| --- | --- | --- | --- |
+| `message` | No | `你好` | Convenience single-turn user message |
+| `messages` | No | Auto-derived from `message` | OpenAI-style message array |
+| `model` | No | `deepseek-v4-flash` | Target model |
+| `stream` | No | `true` | Recommended to keep streaming enabled so raw SSE is recorded |
+| `api_key` | No | First configured key | Business API key to use |
+| `sample_id` | No | Auto-generated | Sample directory name |
+
+On success, the response headers include:
+
+- `X-Ds2-Sample-Id`
+- `X-Ds2-Sample-Dir`
+- `X-Ds2-Sample-Meta`
+- `X-Ds2-Sample-Upstream`
+
+If the request itself succeeds but the process did not record a new upstream capture, the endpoint returns:
+
+```json
+{"detail":"no upstream capture was recorded"}
+```
+
+### `GET /admin/dev/raw-samples/query`
+
+Searches the current process's in-memory capture entries and groups `completion + continue` rounds by `chat_session_id`.
+
+**Query parameters**:
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `q` | empty | Fuzzy match against request/response text |
+| `limit` | `20` | Max number of chains returned |
+
+**Response fields** include:
+
+- `items[].chain_key`
+- `items[].capture_ids`
+- `items[].round_count`
+- `items[].initial_label`
+- `items[].request_preview`
+- `items[].response_preview`
+
+### `POST /admin/dev/raw-samples/save`
+
+Persists one selected in-memory capture chain into `tests/raw_stream_samples/<sample-id>/`.
+
+Any one of these selectors is accepted:
+
+```json
+{"chain_key":"session:xxxx","sample_id":"tmp-from-memory"}
+```
+
+```json
+{"capture_id":"cap_xxx","sample_id":"tmp-from-memory"}
+```
+
+```json
+{"query":"Guangzhou weather","sample_id":"tmp-from-memory"}
+```
+
+The success payload includes `sample_id`, `dir`, `meta_path`, and `upstream_path`.
 
 ### `POST /admin/vercel/sync`
 
@@ -849,15 +1100,24 @@ Or manual deploy required:
 }
 ```
 
+Failed account checks are returned in `failed_accounts`, and any saved Vercel credentials are returned in `saved_credentials`.
+
 ### `GET /admin/vercel/status`
 
 ```json
 {
   "synced": true,
   "last_sync_time": 1738400000,
-  "has_synced_before": true
+  "has_synced_before": true,
+  "env_backed": false,
+  "config_hash": "....",
+  "last_synced_hash": "....",
+  "draft_hash": "....",
+  "draft_differs": false
 }
 ```
+
+`POST /admin/vercel/status` can also accept `config_override` to compare a draft config against the current synced config.
 
 ### `GET /admin/export`
 
@@ -867,6 +1127,29 @@ Or manual deploy required:
   "base64": "ey4uLn0="
 }
 ```
+
+This is the same payload as `GET /admin/config/export`, just with a shorter path.
+
+### `GET /admin/version`
+
+Checks the current build version and the latest GitHub Release:
+
+```json
+{
+  "success": true,
+  "current_version": "3.0.0",
+  "current_tag": "v3.0.0",
+  "source": "file:VERSION",
+  "checked_at": "2026-03-29T00:00:00Z",
+  "latest_tag": "v3.0.0",
+  "latest_version": "3.0.0",
+  "release_url": "https://github.com/CJackHwang/ds2api/releases/tag/v3.0.0",
+  "published_at": "2026-03-28T12:00:00Z",
+  "has_update": false
+}
+```
+
+If GitHub API access fails, the response includes `check_error` while still returning HTTP 200.
 
 ### `GET /admin/dev/captures`
 
@@ -937,7 +1220,7 @@ curl http://localhost:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": false
   }'
@@ -950,7 +1233,7 @@ curl http://localhost:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-reasoner",
+    "model": "deepseek-v4-pro",
     "messages": [{"role": "user", "content": "Explain quantum entanglement"}],
     "stream": true
   }'
@@ -988,7 +1271,7 @@ curl http://localhost:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat-search",
+    "model": "deepseek-v4-flash-search",
     "messages": [{"role": "user", "content": "Latest news today"}],
     "stream": true
   }'
@@ -1001,7 +1284,7 @@ curl http://localhost:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "messages": [{"role": "user", "content": "What is the weather in Beijing?"}],
     "tools": [
       {
@@ -1062,7 +1345,7 @@ curl http://localhost:5001/anthropic/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "claude-sonnet-4-5",
+    "model": "claude-sonnet-4-6",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Hello"}]
   }'
@@ -1099,7 +1382,7 @@ curl http://localhost:5001/v1/chat/completions \
   -H "X-Ds2-Target-Account: user@example.com" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```

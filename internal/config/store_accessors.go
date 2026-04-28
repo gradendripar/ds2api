@@ -6,18 +6,6 @@ import (
 	"strings"
 )
 
-func (s *Store) ClaudeMapping() map[string]string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.cfg.ClaudeModelMap) > 0 {
-		return cloneStringMap(s.cfg.ClaudeModelMap)
-	}
-	if len(s.cfg.ClaudeMapping) > 0 {
-		return cloneStringMap(s.cfg.ClaudeMapping)
-	}
-	return map[string]string{"fast": "deepseek-chat", "slow": "deepseek-reasoner"}
-}
-
 func (s *Store) ModelAliases() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -42,24 +30,21 @@ func (s *Store) CompatWideInputStrictOutput() bool {
 	return *s.cfg.Compat.WideInputStrictOutput
 }
 
-func (s *Store) ToolcallMode() string {
+func (s *Store) CompatStripReferenceMarkers() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	mode := strings.TrimSpace(strings.ToLower(s.cfg.Toolcall.Mode))
-	if mode == "" {
-		return "feature_match"
+	if s.cfg.Compat.StripReferenceMarkers == nil {
+		return true
 	}
-	return mode
+	return *s.cfg.Compat.StripReferenceMarkers
+}
+
+func (s *Store) ToolcallMode() string {
+	return "feature_match"
 }
 
 func (s *Store) ToolcallEarlyEmitConfidence() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	level := strings.TrimSpace(strings.ToLower(s.cfg.Toolcall.EarlyEmitConfidence))
-	if level == "" {
-		return "high"
-	}
-	return level
+	return "high"
 }
 
 func (s *Store) ResponsesStoreTTLSeconds() int {
@@ -75,6 +60,20 @@ func (s *Store) EmbeddingsProvider() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return strings.TrimSpace(s.cfg.Embeddings.Provider)
+}
+
+func (s *Store) AutoDeleteMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.AutoDelete.Mode))
+	switch mode {
+	case "none", "single", "all":
+		return mode
+	}
+	if s.cfg.AutoDelete.Sessions {
+		return "all"
+	}
+	return "none"
 }
 
 func (s *Store) AdminPasswordHash() string {
@@ -109,13 +108,8 @@ func (s *Store) RuntimeAccountMaxInflight() int {
 	if s.cfg.Runtime.AccountMaxInflight > 0 {
 		return s.cfg.Runtime.AccountMaxInflight
 	}
-	for _, key := range []string{"DS2API_ACCOUNT_MAX_INFLIGHT", "DS2API_ACCOUNT_CONCURRENCY"} {
-		raw := strings.TrimSpace(os.Getenv(key))
-		if raw == "" {
-			continue
-		}
-		n, err := strconv.Atoi(raw)
-		if err == nil && n > 0 {
+	if raw := strings.TrimSpace(os.Getenv("DS2API_ACCOUNT_MAX_INFLIGHT")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			return n
 		}
 	}
@@ -128,13 +122,8 @@ func (s *Store) RuntimeAccountMaxQueue(defaultSize int) int {
 	if s.cfg.Runtime.AccountMaxQueue > 0 {
 		return s.cfg.Runtime.AccountMaxQueue
 	}
-	for _, key := range []string{"DS2API_ACCOUNT_MAX_QUEUE", "DS2API_ACCOUNT_QUEUE_SIZE"} {
-		raw := strings.TrimSpace(os.Getenv(key))
-		if raw == "" {
-			continue
-		}
-		n, err := strconv.Atoi(raw)
-		if err == nil && n >= 0 {
+	if raw := strings.TrimSpace(os.Getenv("DS2API_ACCOUNT_MAX_QUEUE")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
 			return n
 		}
 	}
@@ -150,13 +139,8 @@ func (s *Store) RuntimeGlobalMaxInflight(defaultSize int) int {
 	if s.cfg.Runtime.GlobalMaxInflight > 0 {
 		return s.cfg.Runtime.GlobalMaxInflight
 	}
-	for _, key := range []string{"DS2API_GLOBAL_MAX_INFLIGHT", "DS2API_MAX_INFLIGHT"} {
-		raw := strings.TrimSpace(os.Getenv(key))
-		if raw == "" {
-			continue
-		}
-		n, err := strconv.Atoi(raw)
-		if err == nil && n > 0 {
+	if raw := strings.TrimSpace(os.Getenv("DS2API_GLOBAL_MAX_INFLIGHT")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			return n
 		}
 	}
@@ -166,8 +150,53 @@ func (s *Store) RuntimeGlobalMaxInflight(defaultSize int) int {
 	return defaultSize
 }
 
-func (s *Store) AutoDeleteSessions() bool {
+func (s *Store) RuntimeTokenRefreshIntervalHours() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg.AutoDelete.Sessions
+	if s.cfg.Runtime.TokenRefreshIntervalHours > 0 {
+		return s.cfg.Runtime.TokenRefreshIntervalHours
+	}
+	return 6
+}
+
+func (s *Store) AutoDeleteSessions() bool {
+	return s.AutoDeleteMode() != "none"
+}
+
+func (s *Store) HistorySplitEnabled() bool {
+	return false
+}
+
+func (s *Store) HistorySplitTriggerAfterTurns() int {
+	return 1
+}
+
+func (s *Store) CurrentInputFileEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.CurrentInputFile.Enabled == nil {
+		return true
+	}
+	return *s.cfg.CurrentInputFile.Enabled
+}
+
+func (s *Store) CurrentInputFileMinChars() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.CurrentInputFile.MinChars
+}
+
+func (s *Store) ThinkingInjectionEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.ThinkingInjection.Enabled == nil {
+		return true
+	}
+	return *s.cfg.ThinkingInjection.Enabled
+}
+
+func (s *Store) ThinkingInjectionPrompt() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimSpace(s.cfg.ThinkingInjection.Prompt)
 }
