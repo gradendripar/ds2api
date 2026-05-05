@@ -14,6 +14,8 @@ export default function VercelSyncForm({
     setProjectId,
     teamId,
     setTeamId,
+    saveCredentials,
+    setSaveCredentials,
     loading,
     onSync,
 }) {
@@ -69,6 +71,11 @@ export default function VercelSyncForm({
                         {t('vercel.lastSyncTime', { time: new Date(syncStatus.last_sync_time * 1000).toLocaleString() })}
                     </p>
                 )}
+                {syncStatus?.draft_differs && (
+                    <p className="text-xs text-amber-500 mt-2">
+                        {t('vercel.draftDiffers')}
+                    </p>
+                )}
             </div>
 
             <div className="space-y-4">
@@ -119,6 +126,19 @@ export default function VercelSyncForm({
                         onChange={e => setTeamId(e.target.value)}
                     />
                 </div>
+
+                <label className="flex items-start gap-3 text-sm">
+                    <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-ring"
+                        checked={saveCredentials}
+                        onChange={e => setSaveCredentials(e.target.checked)}
+                    />
+                    <span className="space-y-1">
+                        <span className="block font-medium">{t('vercel.saveCredentials')}</span>
+                        <span className="block text-xs text-muted-foreground">{t('vercel.saveCredentialsHint')}</span>
+                    </span>
+                </label>
             </div>
 
             <div className="pt-4">

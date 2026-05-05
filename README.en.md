@@ -4,54 +4,121 @@
 
 # DS2API
 
+<a href="https://trendshift.io/repositories/24508" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24508" alt="CJackHwang%2Fds2api | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
 [![License](https://img.shields.io/github/license/CJackHwang/ds2api.svg)](LICENSE)
 ![Stars](https://img.shields.io/github/stars/CJackHwang/ds2api.svg)
 ![Forks](https://img.shields.io/github/forks/CJackHwang/ds2api.svg)
 [![Release](https://img.shields.io/github/v/release/CJackHwang/ds2api?display_name=tag)](https://github.com/CJackHwang/ds2api/releases)
-[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](DEPLOY.en.md)
+[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](docs/DEPLOY.en.md)
 [![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/templates/L4CFHP)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/CJackHwang/ds2api)
 
 Language: [中文](README.MD) | [English](README.en.md)
 
-DS2API converts DeepSeek Web chat capability into OpenAI-compatible, Claude-compatible, and Gemini-compatible APIs. The backend is a **pure Go implementation**, with a React WebUI admin panel (source in `webui/`, build output auto-generated to `static/admin` during deployment).
+DS2API converts DeepSeek Web chat capability into OpenAI-compatible, Claude-compatible, and Gemini-compatible APIs. The core backend is Go-based, with a small Node Runtime bridge used for Vercel streaming, and the React WebUI admin panel lives in `webui/` (build output auto-generated to `static/admin` during deployment).
 
-## Architecture Overview
+Documentation entry: [Docs Index](docs/README.md) / [Architecture](docs/ARCHITECTURE.en.md) / [API Reference](API.en.md)
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=cjackhwang%2Fds2api&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=cjackhwang/ds2api&type=date&legend=top-left" />
+ </picture>
+</a>
+
+> **Important Disclaimer**
+>
+> This repository is provided for learning, research, personal experimentation, and internal validation only. It does not grant any commercial authorization and comes with no warranty of fitness, stability, or results.
+>
+> The author and repository maintainers are not responsible for any direct or indirect loss, account suspension, data loss, legal risk, or third-party claims arising from use, modification, distribution, deployment, or reliance on this project.
+>
+> Do not use this project in ways that violate service terms, agreements, laws, or platform rules. Before any commercial use, review the `LICENSE`, the relevant terms, and confirm that you have the author's written permission.
+
+## Table of Contents
+
+- [Architecture Overview (Summary)](#architecture-overview-summary)
+- [Key Capabilities](#key-capabilities)
+- [Platform Compatibility Matrix](#platform-compatibility-matrix)
+- [Model Support](#model-support)
+  - [OpenAI Endpoint](#openai-endpoint-get-v1models)
+  - [Claude Endpoint](#claude-endpoint-get-anthropicv1models)
+  - [Gemini Endpoint](#gemini-endpoint)
+- [Quick Start](#quick-start)
+  - [Option 1: Download Release Binaries](#option-1-download-release-binaries)
+  - [Option 2: Docker / GHCR](#option-2-docker--ghcr)
+  - [Option 3: Vercel](#option-3-vercel)
+  - [Option 4: Local Run](#option-4-local-run)
+- [Configuration](#configuration)
+- [Authentication Modes](#authentication-modes)
+- [Concurrency Model](#concurrency-model)
+- [Tool Call Adaptation](#tool-call-adaptation)
+- [Local Dev Packet Capture](#local-dev-packet-capture)
+- [Documentation Index](#documentation-index)
+- [Testing](#testing)
+- [Release Artifact Automation (GitHub Actions)](#release-artifact-automation-github-actions)
+- [Disclaimer](#disclaimer)
+
+## Architecture Overview (Summary)
 
 ```mermaid
 flowchart LR
-    Client["🖥️ Clients\n(OpenAI / Claude / Gemini compat)"]
+    Client["🖥️ Clients / SDKs\n(OpenAI / Claude / Gemini)"]
+    Upstream["☁️ DeepSeek API"]
 
-    subgraph DS2API["DS2API Service"]
-        direction TB
-        CORS["CORS Middleware"]
-        Auth["🔐 Auth Middleware"]
+    subgraph DS2API["DS2API 4.x (Modular HTTP Surface + PromptCompat Core)"]
+        Router["chi Router + Middleware\n(RequestID / RealIP / Logger / Recoverer / CORS)"]
 
-        subgraph Adapters["Adapter Layer"]
-            OA["OpenAI Adapter\n/v1/*"]
-            CA["Claude Adapter\n/anthropic/*"]
-            GA["Gemini Adapter\n/v1beta/models/*"]
+        subgraph HTTP["HTTP API Surface"]
+            OA["OpenAI\nchat / responses / files / embeddings"]
+            CA["Claude\n/anthropic/* + /v1/messages"]
+            GA["Gemini\n/v1beta/models/* + /v1/models/*"]
+            Admin["Admin API\nresource packages"]
+            WebUI["WebUI\n/admin (static hosting)"]
+            Vercel["Vercel Node Stream\n/v1/chat/completions"]
         end
 
-        subgraph Support["Support Modules"]
-            Pool["📦 Account Pool / Queue"]
-            PoW["⚙️ PoW WASM\n(wazero)"]
+        subgraph Runtime["Runtime + Core Capabilities"]
+            Compat["PromptCompat\n(API -> web-chat plain text context)"]
+            Completion["Completion Runtime\n(session / PoW / completion)"]
+            Turn["AssistantTurn\n(output semantic normalization)"]
+            Auth["Auth Resolver\n(API key / bearer / x-goog-api-key)"]
+            Pool["Account Pool + Queue\n(in-flight slots + wait queue)"]
+            DSClient["DeepSeek Client\n(session / auth / completion / files)"]
+            Pow["PoW Solver\n(Pure Go)"]
+            Tool["Tool Sieve\n(Go/Node semantic parity)"]
+            History["Current Input File\n(DS2API_HISTORY.txt)"]
         end
-
-        Admin["🛠️ Admin API\n/admin/*"]
-        WebUI["🌐 WebUI\n(/admin)"]
     end
 
-    DS["☁️ DeepSeek API"]
+    Client --> Router
+    Router --> OA & CA & GA
+    Router --> Admin
+    Router --> WebUI
+    Router --> Vercel
 
-    Client -- "Request" --> CORS --> Auth
-    Auth --> OA & CA & GA
-    OA & CA & GA -- "Call" --> DS
-    Auth --> Admin
-    OA & CA & GA -. "Rotate accounts" .-> Pool
-    OA & CA & GA -. "Compute PoW" .-> PoW
-    DS -- "Response" --> Client
+    OA --> Compat
+    CA & GA --> Compat
+    Compat --> Completion
+    Completion -.full context.-> History
+    Completion --> Turn
+    Vercel -.Go prepare.-> Completion
+    Vercel -.Node SSE.-> Tool
+    Completion --> Auth
+    Completion -.account rotation.-> Pool
+    Completion -.tool-call parsing.-> Tool
+    Completion -.PoW solving.-> Pow
+    Auth --> DSClient
+    DSClient --> Upstream
+    Upstream --> DSClient
+    Turn --> Client
+    Vercel --> Client
 ```
+
+For the full module-by-module architecture and directory responsibilities, see [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md).
 
 - **Backend**: Go (`cmd/ds2api/`, `api/`, `internal/`), no Python runtime
 - **Frontend**: React admin panel (`webui/`), served as static build at runtime
@@ -61,16 +128,19 @@ flowchart LR
 
 | Capability | Details |
 | --- | --- |
-| OpenAI compatible | `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{response_id}`, `POST /v1/embeddings` |
+| OpenAI compatible | `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{response_id}`, `POST /v1/embeddings`, `POST /v1/files`, `GET /v1/files/{file_id}` |
 | Claude compatible | `GET /anthropic/v1/models`, `POST /anthropic/v1/messages`, `POST /anthropic/v1/messages/count_tokens` (plus shortcut paths `/v1/messages`, `/messages`) |
 | Gemini compatible | `POST /v1beta/models/{model}:generateContent`, `POST /v1beta/models/{model}:streamGenerateContent` (plus `/v1/models/{model}:*` paths) |
+| Unified CORS compatibility | `/v1/*`, `/anthropic/*`, `/v1beta/models/*`, and `/admin/*` share one CORS policy; on Vercel, the Node Runtime for `/v1/chat/completions` mirrors the same relaxed preflight behavior for third-party clients |
 | Multi-account rotation | Auto token refresh, email/mobile dual login |
 | Concurrency control | Per-account in-flight limit + waiting queue, dynamic recommended concurrency |
-| DeepSeek PoW | WASM solving via `wazero`, no external Node.js dependency |
+| DeepSeek PoW | Pure Go high-performance solver (DeepSeekHashV1), ms-level response |
 | Tool Calling | Anti-leak handling: non-code-block feature match, early `delta.tool_calls`, structured incremental output |
-| Admin API | Config management, runtime settings hot-reload, account testing/batch test, import/export, Vercel sync |
-| WebUI Admin Panel | SPA at `/admin` (bilingual Chinese/English, dark mode) |
+| Admin API | Config management, runtime settings hot-reload, proxy management, account testing/batch test, session cleanup, import/export, Vercel sync, version check |
+| WebUI Admin Panel | SPA at `/admin` (bilingual Chinese/English, dark mode, with server-side conversation history) |
 | Health Probes | `GET /healthz` (liveness), `GET /readyz` (readiness) |
+
+OpenAI `/v1/*` routes remain canonical, and DS2API also accepts root shortcuts such as `/models`, `/chat/completions`, `/responses`, `/embeddings`, `/files`, and `/files/{file_id}` for clients configured with the bare service URL.
 
 ## Platform Compatibility Matrix
 
@@ -82,43 +152,54 @@ flowchart LR
 | P0 | Anthropic SDK (messages) | ✅ |
 | P0 | Google Gemini SDK (generateContent) | ✅ |
 | P1 | LangChain / LlamaIndex / OpenWebUI (OpenAI-compatible integration) | ✅ |
-| P2 | MCP standalone bridge | Planned |
 
 ## Model Support
 
-### OpenAI Endpoint
+### OpenAI Endpoint (`GET /v1/models`)
 
-| Model | thinking | search |
-| --- | --- | --- |
-| `deepseek-chat` | ❌ | ❌ |
-| `deepseek-reasoner` | ✅ | ❌ |
-| `deepseek-chat-search` | ❌ | ✅ |
-| `deepseek-reasoner-search` | ✅ | ✅ |
+| Family | Model ID | thinking | search |
+| --- | --- | --- | --- |
+| default | `deepseek-v4-flash` | enabled by default, request-controlled | ❌ |
+| expert | `deepseek-v4-pro` | enabled by default, request-controlled | ❌ |
+| default | `deepseek-v4-flash-search` | enabled by default, request-controlled | ✅ |
+| expert | `deepseek-v4-pro-search` | enabled by default, request-controlled | ✅ |
+| vision | `deepseek-v4-vision` | enabled by default, request-controlled | ❌ |
 
-### Claude Endpoint
+Besides native IDs, DS2API also accepts common aliases as input (for example `gpt-4.1`, `gpt-5`, `gpt-5-codex`, `o3`, `claude-*`, `gemini-*`), but `/v1/models` returns normalized DeepSeek native model IDs. The complete alias behavior is documented in [API.en.md](API.en.md#model-alias-resolution) and `config.example.json`.
+Current upstream vision support exposes only the `vision` lane and does not provide a separate search-enabled vision variant.
 
-| Model | Default Mapping |
+### Claude Endpoint (`GET /anthropic/v1/models`)
+
+| Current common model | Default Mapping |
 | --- | --- |
-| `claude-sonnet-4-5` | `deepseek-chat` |
-| `claude-haiku-4-5` (compatible with `claude-3-5-haiku-latest`) | `deepseek-chat` |
-| `claude-opus-4-6` | `deepseek-reasoner` |
+| `claude-sonnet-4-6` | `deepseek-v4-flash` |
+| `claude-haiku-4-5` (compatible with `claude-3-5-haiku-latest`) | `deepseek-v4-flash` |
+| `claude-opus-4-6` | `deepseek-v4-pro` |
 
-Override mapping via `claude_mapping` or `claude_model_mapping` in config.
-In addition, `/anthropic/v1/models` now includes historical Claude 1.x/2.x/3.x/4.x IDs and common aliases for legacy client compatibility.
-
+Override mapping via the global `model_aliases` config.
+Besides the primary aliases above, `/anthropic/v1/models` also returns Claude 4.x snapshots plus historical 3.x IDs and common aliases for legacy client compatibility.
 
 #### Claude Code integration pitfalls (validated)
 
 - Set `ANTHROPIC_BASE_URL` to the DS2API root URL (for example `http://127.0.0.1:5001`). Claude Code sends requests to `/v1/messages?beta=true`.
 - `ANTHROPIC_API_KEY` must match an entry in `keys` from `config.json`. Keeping both a regular key and an `sk-ant-*` style key improves client compatibility.
 - If your environment has proxy variables, set `NO_PROXY=127.0.0.1,localhost,<your_host_ip>` for DS2API to avoid proxy interception of local traffic.
-- If tool calls are rendered as plain text and not executed, upgrade to a build that includes multi-format Claude tool-call parsing (JSON/XML/ANTML/invoke).
+- If tool calls are rendered as plain text and not executed, first verify the model output uses the recommended DSML block: `<|DSML|tool_calls><|DSML|invoke name="..."><|DSML|parameter name="...">...`. DS2API also accepts legacy canonical XML: `<tool_calls><invoke name="..."><parameter name="...">...`; legacy `<tools>` / `<tool_call>` / `<tool_name>` / `<param>`, `<function_call>`, `tool_use`, or standalone JSON `tool_calls` are not executed.
 
 ### Gemini Endpoint
 
 The Gemini adapter maps model names to DeepSeek native models via `model_aliases` or built-in heuristics, supporting both `generateContent` and `streamGenerateContent` call patterns with full Tool Calling support (`functionDeclarations` → `functionCall` output).
 
 ## Quick Start
+
+### Recommended deployment priority
+
+Recommended order when choosing a deployment method:
+
+1. **Download and run release binaries**: the easiest path for most users because the artifacts are already built.
+2. **Docker / GHCR image deployment**: suitable for containerized, orchestrated, or cloud environments.
+3. **Vercel deployment**: suitable if you already use Vercel and accept its platform constraints.
+4. **Run from source / build locally**: suitable for development, debugging, or when you need to modify the code yourself.
 
 ### Universal First Step (all deployment modes)
 
@@ -131,44 +212,42 @@ cp config.example.json config.json
 
 Recommended per deployment mode:
 - Local run: read `config.json` directly
-- Docker / Vercel: generate Base64 from `config.json` and inject as `DS2API_CONFIG_JSON`
+- Docker / Vercel: generate Base64 from `config.json` and inject as `DS2API_CONFIG_JSON`, or paste raw JSON directly
 
-### Option 1: Local Run
+The WebUI admin panel’s “Full configuration template” is loaded from the same `config.example.json`, so updating that file keeps the frontend template in sync.
 
-**Prerequisites**: Go 1.24+, Node.js 20+ (only if building WebUI locally)
+### Option 1: Download Release Binaries
+
+GitHub Actions automatically builds multi-platform archives on each Release:
 
 ```bash
-# 1. Clone
-git clone https://github.com/CJackHwang/ds2api.git
-cd ds2api
-
-# 2. Configure
+# After downloading the archive for your platform
+tar -xzf ds2api_<tag>_linux_amd64.tar.gz
+cd ds2api_<tag>_linux_amd64
 cp config.example.json config.json
-# Edit config.json with your DeepSeek account info and API keys
-
-# 3. Start
-go run ./cmd/ds2api
+# Edit config.json
+./ds2api
 ```
 
-Default URL: `http://localhost:5001`
-
-> **WebUI auto-build**: On first local startup, if `static/admin` is missing, DS2API will auto-run `npm install && npm run build` (requires Node.js). You can also build manually: `./scripts/build-webui.sh`
-
-### Option 2: Docker
+### Option 2: Docker / GHCR
 
 ```bash
-# 1. Prepare env file
+# Pull prebuilt image
+docker pull ghcr.io/cjackhwang/ds2api:latest
+
+# Or run a pinned version
+# docker pull ghcr.io/cjackhwang/ds2api:v3.0.0
+
+# Prepare env file and config file
 cp .env.example .env
+cp config.example.json config.json
 
-# 2. Edit .env (at least set DS2API_ADMIN_KEY)
-#    DS2API_ADMIN_KEY=replace-with-a-strong-secret
-
-# 3. Start
+# Start with compose
 docker-compose up -d
-
-# 4. View logs
-docker-compose logs -f
 ```
+
+The default `docker-compose.yml` uses `ghcr.io/cjackhwang/ds2api:latest` and maps host port `6011` to container port `5001`. If you want `5001` exposed directly, set `DS2API_HOST_PORT=5001` (or adjust the `ports` mapping).
+It also mounts `./config.json` to `/data/config.json` and sets `DS2API_CONFIG_PATH=/data/config.json` by default, which avoids runtime token persistence failures caused by read-only `/app`.
 
 Rebuild after updates: `docker-compose up -d --build`
 
@@ -177,6 +256,12 @@ Rebuild after updates: `docker-compose up -d --build`
 1. Click the “Deploy on Zeabur” button above to deploy.
 2. After deployment, open `/admin` and login with `DS2API_ADMIN_KEY` shown in Zeabur env/template instructions.
 3. Import / edit config in Admin UI (it will be written and persisted to `/data/config.json`).
+
+Fresh Zeabur volumes can start without `/data/config.json`; DS2API will boot with an empty file-backed config and create the file on the first Admin UI save.
+
+For manual deployment without the template, create a Zeabur GitHub service, keep Root Directory as `/`, build with the repo-root `Dockerfile`, mount a persistent volume at `/data`, set `PORT=5001`, `DS2API_ADMIN_KEY=your-strong-secret`, and `DS2API_CONFIG_PATH=/data/config.json`, then expose HTTP port `5001`. See [docs/DEPLOY.en.md](docs/DEPLOY.en.md#manual-deployment-without-the-template) for the full guide.
+
+Note: when Zeabur builds directly from the repo `Dockerfile`, you do not need to pass `BUILD_VERSION`. The image prefers that build arg when provided, and automatically falls back to the repo-root `VERSION` file when it is absent.
 
 ### Option 3: Vercel
 
@@ -198,133 +283,48 @@ Recommended: convert `config.json` to Base64 locally, then paste into `DS2API_CO
 base64 < config.json | tr -d '\n'
 ```
 
-> **Streaming note**: `/v1/chat/completions` on Vercel is routed to `api/chat-stream.js` (Node Runtime) for real-time SSE. Auth, account selection, and session/PoW preparation are still handled by the Go internal prepare endpoint; streaming output (including `tools`) is assembled on Node with Go-aligned anti-leak handling.
+> **Streaming note**: `/v1/chat/completions` on Vercel is routed to `api/chat-stream.js` (Node Runtime) for real-time SSE. Auth, account selection, and session/PoW preparation are still handled by the Go internal prepare endpoint; streaming output (including `tools`) is assembled on Node with Go-aligned anti-leak handling. This is the only interface family currently routed through Node, and its CORS allow behavior is kept aligned with the Go router so third-party preflight handling stays unified.
 
-For detailed deployment instructions, see the [Deployment Guide](DEPLOY.en.md).
+For detailed deployment instructions, see the [Deployment Guide](docs/DEPLOY.en.md).
 
-### Option 4: Download Release Binaries
+### Option 4: Local Run
 
-GitHub Actions automatically builds multi-platform archives on each Release:
+**Prerequisites**: Go 1.26+, Node.js `20.19+` or `22.12+` (only if building WebUI locally)
 
 ```bash
-# After downloading the archive for your platform
-tar -xzf ds2api_<tag>_linux_amd64.tar.gz
-cd ds2api_<tag>_linux_amd64
+# 1. Clone
+git clone https://github.com/CJackHwang/ds2api.git
+cd ds2api
+
+# 2. Configure
 cp config.example.json config.json
-# Edit config.json
-./ds2api
+# Edit config.json with your DeepSeek account info and API keys
+
+# 3. Start
+go run ./cmd/ds2api
 ```
 
-### Option 5: OpenCode CLI
+Default local URL: `http://127.0.0.1:5001`
 
-1. Copy the example config:
+The server actually binds to `0.0.0.0:5001`, so devices on the same LAN can usually reach it through your private IP as well.
 
-```bash
-cp opencode.json.example opencode.json
-```
-
-2. Edit `opencode.json`:
-- Set `baseURL` to your DS2API endpoint (for example, `https://your-domain.com/v1`)
-- Set `apiKey` to your DS2API key (from `config.keys`)
-
-3. Start OpenCode CLI in the project directory (run `opencode` using your installed method).
-
-> Recommended: use the OpenAI-compatible path (`/v1/*`) via `@ai-sdk/openai-compatible` as shown in the example.
-> If your client supports `wire_api`, test both `responses` and `chat`; DS2API supports both paths.
+> **WebUI auto-build**: On first local startup, if `static/admin` is missing, DS2API will auto-run `npm ci` (only when dependencies are missing) and `npm run build -- --outDir static/admin --emptyOutDir` (requires Node.js). You can also build manually: `./scripts/build-webui.sh`
 
 ## Configuration
 
-### `config.json` Example
+`README` keeps only the onboarding path. Use [config.example.json](config.example.json) as the field template, and see the [deployment guide](docs/DEPLOY.en.md#0-prerequisites) plus [API configuration notes](API.en.md#configuration-best-practice) for full details.
 
-```json
-{
-  "keys": ["your-api-key-1", "your-api-key-2"],
-  "accounts": [
-    {
-      "email": "user@example.com",
-      "password": "your-password",
-      "token": ""
-    },
-    {
-      "mobile": "12345678901",
-      "password": "your-password",
-      "token": ""
-    }
-  ],
-  "model_aliases": {
-    "gpt-4o": "deepseek-chat",
-    "gpt-5-codex": "deepseek-reasoner",
-    "o3": "deepseek-reasoner"
-  },
-  "compat": {
-    "wide_input_strict_output": true
-  },
-  "toolcall": {
-    "mode": "feature_match",
-    "early_emit_confidence": "high"
-  },
-  "responses": {
-    "store_ttl_seconds": 900
-  },
-  "embeddings": {
-    "provider": "deterministic"
-  },
-  "claude_model_mapping": {
-    "fast": "deepseek-chat",
-    "slow": "deepseek-reasoner"
-  },
-  "admin": {
-    "jwt_expire_hours": 24
-  },
-  "runtime": {
-    "account_max_inflight": 2,
-    "account_max_queue": 0,
-    "global_max_inflight": 0
-  }
-}
-```
+Common fields:
 
-- `keys`: API access keys; clients authenticate via `Authorization: Bearer <key>`
-- `accounts`: DeepSeek account list, supports `email` or `mobile` login
-- `token`: Leave empty for auto-login on first request; or pre-fill an existing token
-- `model_aliases`: Map common model names (GPT/Codex/Claude) to DeepSeek models
-- `compat.wide_input_strict_output`: Keep `true` (current default policy)
-- `toolcall`: Fixed to feature matching + high-confidence early emit
-- `responses.store_ttl_seconds`: In-memory TTL for `/v1/responses/{id}`
-- `embeddings.provider`: Embeddings provider (`deterministic/mock/builtin` built-in)
-- `claude_model_mapping`: Maps `fast`/`slow` suffixes to corresponding DeepSeek models
-- `admin`: Admin panel settings (JWT expiry, password hash, etc.), hot-reloadable via Admin Settings API
-- `runtime`: Runtime parameters (concurrency limits, queue sizes), hot-reloadable via Admin Settings API
+- `keys` / `api_keys`: client API keys; `api_keys` adds `name` and `remark` metadata while `keys` remains compatible.
+- `accounts`: managed DeepSeek accounts, supporting `email` or `mobile` login plus proxy/name/remark metadata.
+- `model_aliases`: one shared alias map for OpenAI / Claude / Gemini model names.
+- `runtime`: account concurrency, queueing, and token refresh behavior, hot-reloadable via Admin Settings.
+- `auto_delete.mode`: remote session cleanup after each request, supporting `none` / `single` / `all`.
+- `current_input_file`: the global context split/upload mode; it is enabled by default and uploads the full context as a `DS2API_HISTORY.txt` context file once the character threshold is reached.
+- If you turn off `current_input_file`, requests pass through directly without uploading any split context file.
 
-### Environment Variables
-
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `PORT` | Service port | `5001` |
-| `LOG_LEVEL` | Log level | `INFO` (`DEBUG`/`WARN`/`ERROR`) |
-| `DS2API_ADMIN_KEY` | Admin login key | `admin` |
-| `DS2API_JWT_SECRET` | Admin JWT signing secret | Same as `DS2API_ADMIN_KEY` |
-| `DS2API_JWT_EXPIRE_HOURS` | Admin JWT TTL in hours | `24` |
-| `DS2API_CONFIG_PATH` | Config file path | `config.json` |
-| `DS2API_CONFIG_JSON` | Inline config (JSON or Base64) | — |
-| `DS2API_WASM_PATH` | PoW WASM file path | Auto-detect |
-| `DS2API_STATIC_ADMIN_DIR` | Admin static assets dir | `static/admin` |
-| `DS2API_AUTO_BUILD_WEBUI` | Auto-build WebUI on startup | Enabled locally, disabled on Vercel |
-| `DS2API_ACCOUNT_MAX_INFLIGHT` | Max in-flight requests per account | `2` |
-| `DS2API_ACCOUNT_CONCURRENCY` | Alias (legacy compat) | — |
-| `DS2API_ACCOUNT_MAX_QUEUE` | Waiting queue limit | `recommended_concurrency` |
-| `DS2API_ACCOUNT_QUEUE_SIZE` | Alias (legacy compat) | — |
-| `DS2API_GLOBAL_MAX_INFLIGHT` | Global max in-flight requests | `recommended_concurrency` |
-| `DS2API_MAX_INFLIGHT` | Alias (legacy compat) | — |
-| `DS2API_VERCEL_INTERNAL_SECRET` | Vercel hybrid streaming internal auth | Falls back to `DS2API_ADMIN_KEY` |
-| `DS2API_VERCEL_STREAM_LEASE_TTL_SECONDS` | Stream lease TTL seconds | `900` |
-| `DS2API_DEV_PACKET_CAPTURE` | Local dev packet capture switch (record recent request/response bodies) | Enabled by default on non-Vercel local runtime |
-| `DS2API_DEV_PACKET_CAPTURE_LIMIT` | Number of captured sessions to retain (auto-evict overflow) | `5` |
-| `DS2API_DEV_PACKET_CAPTURE_MAX_BODY_BYTES` | Max recorded bytes per captured response body | `2097152` |
-| `VERCEL_TOKEN` | Vercel sync token | — |
-| `VERCEL_PROJECT_ID` | Vercel project ID | — |
-| `VERCEL_TEAM_ID` | Vercel team ID | — |
-| `DS2API_VERCEL_PROTECTION_BYPASS` | Vercel deployment protection bypass for internal Node→Go calls | — |
+For the full environment variable list, see [docs/DEPLOY.en.md](docs/DEPLOY.en.md). For auth behavior, see [API.en.md](API.en.md#authentication).
 
 ## Authentication Modes
 
@@ -336,6 +336,7 @@ For business endpoints (`/v1/*`, `/anthropic/*`, Gemini routes), DS2API supports
 | **Direct token** | If the token is not in `config.keys`, DS2API treats it as a DeepSeek token directly |
 
 Optional header `X-Ds2-Target-Account`: Pin a specific managed account (value is email or mobile).
+Gemini routes also accept `x-goog-api-key`, or `?key=` / `?api_key=` when no auth header is present.
 
 ## Concurrency Model
 
@@ -355,21 +356,22 @@ Queue limit = DS2API_ACCOUNT_MAX_QUEUE (default = recommended concurrency)
 When `tools` is present in the request, DS2API performs anti-leak handling:
 
 1. Toolcall feature matching is enabled only in **non-code-block context** (fenced examples are ignored)
-   - In non-code-block context, tool JSON may still be recognized even when mixed with normal prose; surrounding prose can remain as text output.
-2. `responses` streaming strictly uses official item lifecycle events (`response.output_item.*`, `response.content_part.*`, `response.function_call_arguments.*`)
-3. Tool names not declared in the `tools` schema are strictly rejected and will not be emitted as valid tool calls
+2. The parser now treats the DSML shell as the recommended executable tool-calling syntax: `<|DSML|tool_calls>` → `<|DSML|invoke name="...">` → `<|DSML|parameter name="...">`; it also accepts legacy canonical XML `<tool_calls>` → `<invoke name="...">` → `<parameter name="...">`. DSML is a shell alias and internal parsing remains XML-based; legacy `<tools>` / `<tool_call>` / `<tool_name>` / `<param>`, `<function_call>`, `tool_use`, antml variants, and standalone JSON `tool_calls` payloads are treated as plain text
+3. `responses` streaming strictly uses official item lifecycle events (`response.output_item.*`, `response.content_part.*`, `response.function_call_arguments.*`)
 4. `responses` supports and enforces `tool_choice` (`auto`/`none`/`required`/forced function); `required` violations return `422` for non-stream and `response.failed` for stream
-5. Valid tool call events are only emitted after passing policy validation, preventing invalid tool names from entering the client execution chain
+5. The output protocol follows the client request (OpenAI / Claude / Gemini native shapes); model-side prompting can prefer XML, and the compatibility layer handles the protocol-specific translation
+
+> Note: the current parser still prioritizes “parse successfully whenever possible”; hard allow-list rejection for undeclared tool names is not enabled yet.
 
 ## Local Dev Packet Capture
 
-This is for debugging issues such as Responses reasoning streaming and tool-call handoff. When enabled, DS2API stores the latest N DeepSeek conversation payload pairs (request body + upstream response body), defaulting to 5 entries with auto-eviction.
+This is for debugging issues such as Responses reasoning streaming and tool-call handoff. When enabled, DS2API stores the latest N DeepSeek conversation payload pairs (request body + upstream response body), defaulting to 20 entries with auto-eviction; each response body is capped at 5 MB by default.
 
 Enable example:
 
 ```bash
 DS2API_DEV_PACKET_CAPTURE=true \
-DS2API_DEV_PACKET_CAPTURE_LIMIT=5 \
+DS2API_DEV_PACKET_CAPTURE_LIMIT=20 \
 go run ./cmd/ds2api
 ```
 
@@ -377,6 +379,8 @@ Inspect/clear (Admin JWT required):
 
 - `GET /admin/dev/captures`: list captured items (newest first)
 - `DELETE /admin/dev/captures`: clear captured items
+- `GET /admin/dev/raw-samples/query?q=keyword&limit=20`: search current in-memory captures by prompt keyword and group `completion + continue` by `chat_session_id`
+- `POST /admin/dev/raw-samples/save`: persist a selected capture chain as `tests/raw_stream_samples/<sample-id>/`
 
 Response fields include:
 
@@ -384,61 +388,10 @@ Response fields include:
 - `response_body`: concatenated raw upstream stream body text
 - `response_truncated`: whether body-size truncation happened
 
-## Project Structure
+The save endpoint can target a chain by `query`, `chain_key`, or `capture_id`. Example:
 
-```text
-ds2api/
-├── cmd/
-│   ├── ds2api/              # Local / container entrypoint
-│   └── ds2api-tests/        # End-to-end testsuite entrypoint
-├── api/
-│   ├── index.go             # Vercel Serverless Go entry
-│   ├── chat-stream.js       # Vercel Node.js stream relay
-│   └── (rewrite targets in vercel.json)
-├── internal/
-│   ├── account/             # Account pool and concurrency queue
-│   ├── adapter/
-│   │   ├── openai/          # OpenAI adapter (incl. tool call parsing, Vercel stream prepare/release)
-│   │   ├── claude/          # Claude adapter
-│   │   └── gemini/          # Gemini adapter (generateContent / streamGenerateContent)
-│   ├── admin/               # Admin API handlers (incl. Settings hot-reload)
-│   ├── auth/                # Auth and JWT
-│   ├── claudeconv/          # Claude message format conversion
-│   ├── compat/              # Compatibility helpers
-│   ├── config/              # Config loading and hot-reload
-│   ├── deepseek/            # DeepSeek API client, PoW WASM
-│   ├── js/                  # Node runtime stream/compat logic
-│   ├── devcapture/          # Dev packet capture module
-│   ├── format/              # Output formatting
-│   ├── prompt/              # Prompt construction
-│   ├── server/              # HTTP routing and middleware (chi router)
-│   ├── sse/                 # SSE parsing utilities
-│   ├── stream/              # Unified stream consumption engine
-│   ├── util/                # Common utilities
-│   └── webui/               # WebUI static file serving and auto-build
-├── webui/                   # React WebUI source (Vite + Tailwind)
-│   └── src/
-│       ├── app/             # Routing, auth, config state
-│       ├── features/        # Feature modules (account/settings/vercel/apiTester)
-│       ├── components/      # Shared UI pieces (login/landing, etc.)
-│       └── locales/         # Language packs (zh.json / en.json)
-├── scripts/
-│   └── build-webui.sh       # Manual WebUI build script
-├── tests/
-│   ├── compat/              # Compatibility fixtures and expected outputs
-│   └── scripts/             # Unified test script entrypoints (unit/e2e)
-├── static/admin/            # WebUI build output (not committed to Git)
-├── .github/
-│   ├── workflows/           # GitHub Actions (quality gates + release automation)
-│   ├── ISSUE_TEMPLATE/      # Issue templates
-│   └── PULL_REQUEST_TEMPLATE.md
-├── config.example.json      # Config file template
-├── .env.example             # Environment variable template
-├── Dockerfile               # Multi-stage build (WebUI + Go)
-├── docker-compose.yml       # Production Docker Compose
-├── docker-compose.dev.yml   # Development Docker Compose
-├── vercel.json              # Vercel routing and build config
-└── go.mod / go.sum          # Go module dependencies
+```json
+{"query":"Guangzhou weather","sample_id":"gz-weather-from-memory"}
 ```
 
 ## Documentation Index
@@ -446,45 +399,39 @@ ds2api/
 | Document | Description |
 | --- | --- |
 | [API.md](API.md) / [API.en.md](API.en.md) | API reference with request/response examples |
-| [DEPLOY.md](DEPLOY.md) / [DEPLOY.en.md](DEPLOY.en.md) | Deployment guide (local/Docker/Vercel/systemd) |
-| [CONTRIBUTING.md](CONTRIBUTING.md) / [CONTRIBUTING.en.md](CONTRIBUTING.en.md) | Contributing guide |
-| [TESTING.md](TESTING.md) | Testsuite guide |
+| [DEPLOY.md](docs/DEPLOY.md) / [DEPLOY.en.md](docs/DEPLOY.en.md) | Deployment guide (local/Docker/Vercel/systemd) |
+| [CONTRIBUTING.md](docs/CONTRIBUTING.md) / [CONTRIBUTING.en.md](docs/CONTRIBUTING.en.md) | Contributing guide |
+| [TESTING.md](docs/TESTING.md) | Testsuite guide |
 
 ## Testing
 
-```bash
-# Unit tests (Go + Node)
-./tests/scripts/run-unit-all.sh
+For the full testing guide, see [docs/TESTING.md](docs/TESTING.md).
 
-# One-command live end-to-end tests (real accounts, full request/response logs)
-./tests/scripts/run-live.sh
-
-# Or with custom flags
-go run ./cmd/ds2api-tests \
-  --config config.json \
-  --admin-key admin \
-  --out artifacts/testsuite \
-  --timeout 120 \
-  --retries 2
-```
+Quick commands:
 
 ```bash
-# Release-blocking gates
-./tests/scripts/check-stage6-manual-smoke.sh
+# Local PR gates
+./scripts/lint.sh
 ./tests/scripts/check-refactor-line-gate.sh
 ./tests/scripts/run-unit-all.sh
-npm ci --prefix webui && npm run build --prefix webui
+npm run build --prefix webui
+
+# Live end-to-end tests (real accounts, full request/response logs)
+./tests/scripts/run-live.sh
 ```
 
 ## Release Artifact Automation (GitHub Actions)
 
 Workflow: `.github/workflows/release-artifacts.yml`
 
-- **Trigger**: only on GitHub Release `published` (normal pushes do not trigger builds)
-- **Outputs**: multi-platform archives (`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`) + `sha256sums.txt`
+- **Trigger**: by default only on GitHub Release `published`; you can also run it manually via `workflow_dispatch` and pass `release_tag` to rerun / backfill
+- **Outputs**: multi-platform binary archives (`linux/amd64`, `linux/arm64`, `linux/armv7`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`), Linux Docker image export tarballs, and `sha256sums.txt`
 - **Container publishing**: GHCR only (`ghcr.io/cjackhwang/ds2api`)
-- **Each archive includes**: `ds2api` executable, `static/admin`, WASM file (with embedded fallback support), config template, README, LICENSE
+- **Each binary archive includes**: the `ds2api` executable, `static/admin`, `config.example.json`, `.env.example`, `README.MD`, `README.en.md`, and `LICENSE`
 
 ## Disclaimer
 
-This project is built through reverse engineering and is provided for learning and research only. Stability is not guaranteed. Do not use it in scenarios that violate terms of service or laws.
+This project is built through reverse engineering and is provided for learning, research, personal experimentation, and internal validation only. No commercial authorization is granted, and no warranty of stability, fitness, or results is provided.
+The author and repository maintainers are not responsible for any direct or indirect loss, account suspension, data loss, legal risk, or third-party claims arising from use, modification, distribution, deployment, or reliance on this project.
+
+Do not use this project in ways that violate service terms, agreements, laws, or platform rules. Before any commercial use, review the `LICENSE`, the relevant terms, and confirm that you have the author's written permission.

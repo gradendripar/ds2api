@@ -10,12 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"ds2api/internal/util"
+
 	"github.com/google/uuid"
 )
 
 const (
-	defaultLimit        = 5
-	defaultMaxBodyBytes = 2 * 1024 * 1024
+	defaultLimit        = 20
+	defaultMaxBodyBytes = 5 * 1024 * 1024
 	maxLimit            = 50
 )
 
@@ -194,7 +196,8 @@ func (c *captureBody) append(chunk string) {
 	}
 	remain := maxLen - current
 	if len(chunk) > remain {
-		c.buf.WriteString(chunk[:remain])
+		truncated, _ := util.TruncateUTF8Bytes(chunk, remain)
+		c.buf.WriteString(truncated)
 		c.truncated = true
 		return
 	}

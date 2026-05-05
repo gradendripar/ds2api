@@ -12,15 +12,20 @@ spec:
   readme: |-
     # DS2API (Zeabur)
 
+    ## Runtime baseline
+    - Go: 1.26
+
     ## After deployment
     - Admin panel: `/admin`
     - Health check: `/healthz`
     - Config is persisted at `/data/config.json` (mounted volume)
+    - `BUILD_VERSION` is optional; when omitted, Docker build falls back to the repo `VERSION` file automatically
 
     ## First-time setup
     1. Open your service URL, then visit `/admin`
     2. Login with `DS2API_ADMIN_KEY` (shown in Zeabur env/instructions)
     3. Import / edit config in Admin UI (saved to `/data/config.json`)
+    4. On a fresh volume, DS2API starts with an empty config and creates `/data/config.json` on the first save
 
   services:
     - name: ds2api

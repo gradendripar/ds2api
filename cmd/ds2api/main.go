@@ -18,17 +18,26 @@ import (
 )
 
 func main() {
+	if err := config.LoadDotEnv(); err != nil {
+		config.Logger.Warn("[dotenv] load failed", "error", err)
+	}
+	config.RefreshLogger()
 	webui.EnsureBuiltOnStartup()
 	_ = auth.AdminKey()
-	app := server.NewApp()
+	app, err := server.NewApp()
+	if err != nil {
+		config.Logger.Error("server initialization failed", "error", err)
+		os.Exit(1)
+	}
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = "5001"
 	}
 
 	srv := &http.Server{
-		Addr:    "0.0.0.0:" + port,
-		Handler: app.Router,
+		Addr:              "0.0.0.0:" + port,
+		Handler:           app.Router,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 	localURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 	lanIP := detectLANIPv4()

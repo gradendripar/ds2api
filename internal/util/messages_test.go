@@ -1,6 +1,7 @@
 package util
 
 import (
+	"strings"
 	"testing"
 
 	"ds2api/internal/config"
@@ -12,7 +13,10 @@ func TestMessagesPrepareBasic(t *testing.T) {
 	if got == "" {
 		t.Fatal("expected non-empty prompt")
 	}
-	if got != "Hello" {
+	if !strings.HasPrefix(got, "<｜begin▁of▁sentence｜><｜System｜>") {
+		t.Fatalf("expected output integrity guard at the start, got %q", got)
+	}
+	if !strings.Contains(got, "Hello") || !strings.HasSuffix(got, "<｜Assistant｜>") {
 		t.Fatalf("unexpected prompt: %q", got)
 	}
 }
@@ -22,14 +26,39 @@ func TestMessagesPrepareRoles(t *testing.T) {
 		{"role": "system", "content": "You are helper"},
 		{"role": "user", "content": "Hi"},
 		{"role": "assistant", "content": "Hello"},
+		{"role": "tool", "content": "Search results"},
 		{"role": "user", "content": "How are you"},
 	}
 	got := MessagesPrepare(messages)
+	if !contains(got, "Output integrity guard") {
+		t.Fatalf("expected output integrity guard in %q", got)
+	}
+	if !contains(got, "You are helper") || !contains(got, "<｜User｜>Hi") {
+		t.Fatalf("expected system/user content in %q", got)
+	}
+	if !contains(got, "<｜begin▁of▁sentence｜>") {
+		t.Fatalf("expected begin marker in %q", got)
+	}
+	if !contains(got, "<｜User｜>Hi<｜Assistant｜>Hello<｜end▁of▁sentence｜>") {
+		t.Fatalf("expected user/assistant separation in %q", got)
+	}
+	if !contains(got, "<｜Assistant｜>Hello<｜end▁of▁sentence｜><｜Tool｜>Search results<｜end▁of▁toolresults｜>") {
+		t.Fatalf("expected assistant/tool separation in %q", got)
+	}
+	if !contains(got, "<｜Tool｜>Search results<｜end▁of▁toolresults｜><｜User｜>How are you") {
+		t.Fatalf("expected tool/user separation in %q", got)
+	}
 	if !contains(got, "<｜Assistant｜>") {
 		t.Fatalf("expected assistant marker in %q", got)
 	}
+	if !contains(got, "<｜System｜>") {
+		t.Fatalf("expected system marker in %q", got)
+	}
 	if !contains(got, "<｜User｜>") {
 		t.Fatalf("expected user marker in %q", got)
+	}
+	if !contains(got, "<｜Tool｜>") {
+		t.Fatalf("expected tool marker in %q", got)
 	}
 }
 
@@ -55,8 +84,11 @@ func TestMessagesPrepareArrayTextVariants(t *testing.T) {
 		},
 	}
 	got := MessagesPrepare(messages)
-	if got != "line1\nline2" {
+	if !contains(got, "line1\nline2") {
 		t.Fatalf("unexpected content from text variants: %q", got)
+	}
+	if !strings.Contains(got, "Output integrity guard") {
+		t.Fatalf("expected output integrity guard in %q", got)
 	}
 }
 
@@ -79,6 +111,30 @@ func TestConvertClaudeToDeepSeek(t *testing.T) {
 	first, _ := msgs[0].(map[string]any)
 	if first["role"] != "system" {
 		t.Fatalf("expected first message system, got %#v", first)
+	}
+}
+
+func TestConvertClaudeToDeepSeekUsesGlobalAliasResolution(t *testing.T) {
+	store := config.LoadStore()
+	req := map[string]any{
+		"model":    "claude-3-5-sonnet-latest",
+		"messages": []any{map[string]any{"role": "user", "content": "Hi"}},
+	}
+	out := ConvertClaudeToDeepSeek(req, store)
+	if out["model"] != "deepseek-v4-flash" {
+		t.Fatalf("expected global alias resolution, got model=%q", out["model"])
+	}
+}
+
+func TestConvertClaudeToDeepSeekUsesNoThinkingAliasResolution(t *testing.T) {
+	store := config.LoadStore()
+	req := map[string]any{
+		"model":    "claude-sonnet-4-6-nothinking",
+		"messages": []any{map[string]any{"role": "user", "content": "Hi"}},
+	}
+	out := ConvertClaudeToDeepSeek(req, store)
+	if out["model"] != "deepseek-v4-flash-nothinking" {
+		t.Fatalf("expected noThinking alias resolution, got model=%q", out["model"])
 	}
 }
 
