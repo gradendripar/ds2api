@@ -5,6 +5,7 @@ import { useSettingsForm } from './useSettingsForm'
 import SecuritySection from './SecuritySection'
 import RuntimeSection from './RuntimeSection'
 import BehaviorSection from './BehaviorSection'
+import CurrentInputFileSection from './CurrentInputFileSection'
 import AutoDeleteSection from './AutoDeleteSection'
 import ModelSection from './ModelSection'
 import BackupSection from './BackupSection'
@@ -36,6 +37,8 @@ export default function SettingsContainer({ onRefresh, onMessage, authFetch, onF
         saveSettings,
         updatePassword,
         loadExportData,
+        downloadExportFile,
+        loadImportFile,
         doImport,
     } = useSettingsForm({
         apiFetch,
@@ -92,6 +95,8 @@ export default function SettingsContainer({ onRefresh, onMessage, authFetch, onF
 
             <BehaviorSection t={t} form={form} setForm={setForm} />
 
+            <CurrentInputFileSection t={t} form={form} setForm={setForm} />
+
             <AutoDeleteSection t={t} form={form} setForm={setForm} />
 
             <ModelSection t={t} form={form} setForm={setForm} />
@@ -102,7 +107,9 @@ export default function SettingsContainer({ onRefresh, onMessage, authFetch, onF
                 setImportMode={setImportMode}
                 importing={importing}
                 onLoadExportData={loadExportData}
+                onDownloadExportFile={downloadExportFile}
                 onImport={doImport}
+                onImportFileChange={loadImportFile}
                 importText={importText}
                 setImportText={setImportText}
                 exportData={exportData}

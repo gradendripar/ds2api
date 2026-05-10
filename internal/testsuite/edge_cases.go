@@ -47,7 +47,7 @@ func (r *Runner) caseConcurrencyThresholdLimit(ctx context.Context, cc *caseCont
 					"Authorization": "Bearer " + r.apiKey,
 				},
 				Body: map[string]any{
-					"model": "deepseek-chat",
+					"model": "deepseek-v4-flash",
 					"messages": []map[string]any{
 						{"role": "user", "content": fmt.Sprintf("并发边界测试 #%d，请输出不少于300字。", idx)},
 					},
@@ -92,7 +92,7 @@ func (r *Runner) caseStreamAbortRelease(ctx context.Context, cc *caseContext) er
 				"Authorization": "Bearer " + r.apiKey,
 			},
 			Body: map[string]any{
-				"model": "deepseek-chat",
+				"model": "deepseek-v4-flash",
 				"messages": []map[string]any{
 					{"role": "user", "content": fmt.Sprintf("中断释放测试 #%d，请流式回复", i)},
 				},
@@ -170,7 +170,7 @@ func (r *Runner) caseToolcallStreamMixed(ctx context.Context, cc *caseContext) e
 	cc.assert("tool_calls_delta_present", hasTool, "tool_calls delta missing")
 	cc.assert("no_raw_tool_json_leak", !rawLeak, "raw tool_calls leaked")
 	cc.assert("done_terminated", done, "expected [DONE]")
-	if !(hasTool && hasText) {
+	if !hasTool || !hasText {
 		r.warnings = append(r.warnings, "toolcall mixed stream did not produce both text and tool_calls in this run (model-side behavior dependent)")
 	}
 	return nil
@@ -184,7 +184,7 @@ func (r *Runner) caseSSEJSONIntegrity(ctx context.Context, cc *caseContext) erro
 			"Authorization": "Bearer " + r.apiKey,
 		},
 		Body: map[string]any{
-			"model": "deepseek-chat",
+			"model": "deepseek-v4-flash",
 			"messages": []map[string]any{
 				{"role": "user", "content": "输出一句话"},
 			},

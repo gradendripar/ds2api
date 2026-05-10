@@ -1,22 +1,25 @@
 package openai
 
 import (
+	"ds2api/internal/toolcall"
 	"strings"
 	"time"
-
-	"ds2api/internal/util"
 )
 
-func BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText string, toolNames []string) map[string]any {
-	detected := util.ParseStandaloneToolCallsDetailed(finalText, toolNames)
+func BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalText string, toolNames []string, toolsRaw any) map[string]any {
+	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
+	return BuildChatCompletionWithToolCalls(completionID, model, finalPrompt, finalThinking, finalText, detected.Calls, toolsRaw)
+}
+
+func BuildChatCompletionWithToolCalls(completionID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall, toolsRaw any) map[string]any {
 	finishReason := "stop"
 	messageObj := map[string]any{"role": "assistant", "content": finalText}
 	if strings.TrimSpace(finalThinking) != "" {
 		messageObj["reasoning_content"] = finalThinking
 	}
-	if len(detected.Calls) > 0 {
+	if len(detected) > 0 {
 		finishReason = "tool_calls"
-		messageObj["tool_calls"] = util.FormatOpenAIToolCalls(detected.Calls)
+		messageObj["tool_calls"] = toolcall.FormatOpenAIToolCalls(detected, toolsRaw)
 		messageObj["content"] = nil
 	}
 
@@ -26,7 +29,7 @@ func BuildChatCompletion(completionID, model, finalPrompt, finalThinking, finalT
 		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []map[string]any{{"index": 0, "message": messageObj, "finish_reason": finishReason}},
-		"usage":   BuildChatUsage(finalPrompt, finalThinking, finalText),
+		"usage":   BuildChatUsageForModel(model, finalPrompt, finalThinking, finalText, 0),
 	}
 }
 

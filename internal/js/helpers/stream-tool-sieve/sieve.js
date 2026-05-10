@@ -1,17 +1,20 @@
 'use strict';
-
 const {
   resetIncrementalToolState,
   noteText,
-  insideCodeFence,
+  insideCodeFenceWithState,
 } = require('./state');
+const { trimWrappingJSONFence } = require('./jsonscan');
 const {
-  parseStandaloneToolCallsDetailed,
-} = require('./parse');
+  findToolMarkupTagOutsideIgnored,
+  sanitizeLooseCDATA,
+} = require('./parse_payload');
 const {
-  extractJSONObjectFrom,
-} = require('./jsonscan');
-
+  consumeXMLToolCapture: consumeXMLToolCaptureImpl,
+  hasOpenXMLToolTag,
+  shouldKeepBareInvokeCapture,
+  findPartialXMLToolTagStart,
+} = require('./sieve-xml');
 function processToolSieveChunk(state, chunk, toolNames) {
   if (!state) {
     return [];
@@ -20,8 +23,6 @@ function processToolSieveChunk(state, chunk, toolNames) {
     state.pending += chunk;
   }
   const events = [];
-
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     if (Array.isArray(state.pendingToolCalls) && state.pendingToolCalls.length > 0) {
       events.push({ type: 'tool_calls', calls: state.pendingToolCalls });
@@ -44,6 +45,10 @@ function processToolSieveChunk(state, chunk, toolNames) {
       resetIncrementalToolState(state);
 
       if (Array.isArray(consumed.calls) && consumed.calls.length > 0) {
+        if (consumed.prefix) {
+          noteText(state, consumed.prefix);
+          events.push({ type: 'text', text: consumed.prefix });
+        }
         state.pendingToolRaw = captured;
         state.pendingToolCalls = consumed.calls;
         if (consumed.suffix) {
@@ -60,17 +65,22 @@ function processToolSieveChunk(state, chunk, toolNames) {
       }
       continue;
     }
-
     const pending = state.pending || '';
     if (!pending) {
       break;
     }
-
-    const start = findToolSegmentStart(pending);
+    const start = findToolSegmentStart(state, pending);
+    if (start === HOLD_TOOL_SEGMENT_START) {
+      break;
+    }
     if (start >= 0) {
       const prefix = pending.slice(0, start);
       if (prefix) {
+        const resetMarkdownSpan = shouldResetUnclosedMarkdownPrefix(state, prefix, pending.slice(start));
         noteText(state, prefix);
+        if (resetMarkdownSpan) {
+          state.markdownCodeSpanTicks = 0;
+        }
         events.push({ type: 'text', text: prefix });
       }
       state.pending = '';
@@ -79,8 +89,7 @@ function processToolSieveChunk(state, chunk, toolNames) {
       resetIncrementalToolState(state);
       continue;
     }
-
-    const [safe, hold] = splitSafeContentForToolDetection(pending);
+    const [safe, hold] = splitSafeContentForToolDetection(state, pending);
     if (!safe) {
       break;
     }
@@ -96,13 +105,15 @@ function flushToolSieve(state, toolNames) {
     return [];
   }
   const events = processToolSieveChunk(state, '', toolNames);
-
+  if (state.pending && Number.isInteger(state.markdownCodeSpanTicks) && state.markdownCodeSpanTicks > 0) {
+    state.markdownCodeSpanTicks = 0;
+    events.push(...processToolSieveChunk(state, '', toolNames));
+  }
   if (Array.isArray(state.pendingToolCalls) && state.pendingToolCalls.length > 0) {
     events.push({ type: 'tool_calls', calls: state.pendingToolCalls });
     state.pendingToolRaw = '';
     state.pendingToolCalls = [];
   }
-
   if (state.capturing) {
     const consumed = consumeToolCapture(state, toolNames);
     if (consumed.ready) {
@@ -118,85 +129,171 @@ function flushToolSieve(state, toolNames) {
         events.push({ type: 'text', text: consumed.suffix });
       }
     } else if (state.capture) {
-      noteText(state, state.capture);
-      events.push({ type: 'text', text: state.capture });
+      const content = state.capture;
+      const recovered = sanitizeLooseCDATA(content);
+      if (recovered !== content) {
+        const recoveredResult = consumeXMLToolCaptureImpl(recovered, toolNames, trimWrappingJSONFence);
+        if (recoveredResult.ready && Array.isArray(recoveredResult.calls) && recoveredResult.calls.length > 0) {
+          if (recoveredResult.prefix) {
+            noteText(state, recoveredResult.prefix);
+            events.push({ type: 'text', text: recoveredResult.prefix });
+          }
+          events.push({ type: 'tool_calls', calls: recoveredResult.calls });
+          if (recoveredResult.suffix) {
+            noteText(state, recoveredResult.suffix);
+            events.push({ type: 'text', text: recoveredResult.suffix });
+          }
+        } else {
+          noteText(state, content);
+          events.push({ type: 'text', text: content });
+        }
+      } else {
+        noteText(state, content);
+        events.push({ type: 'text', text: content });
+      }
     }
     state.capture = '';
     state.capturing = false;
     resetIncrementalToolState(state);
   }
-
   if (state.pending) {
     noteText(state, state.pending);
     events.push({ type: 'text', text: state.pending });
     state.pending = '';
   }
-
   return events;
 }
 
-function splitSafeContentForToolDetection(s) {
+function splitSafeContentForToolDetection(state, s) {
   const text = s || '';
   if (!text) {
     return ['', ''];
   }
-  const suspiciousStart = findSuspiciousPrefixStart(text);
-  if (suspiciousStart < 0) {
-    return [text, ''];
-  }
-  if (suspiciousStart > 0) {
-    return [text.slice(0, suspiciousStart), text.slice(suspiciousStart)];
-  }
-  // If suspicious content starts at the beginning, keep holding until we can
-  // either parse a full tool JSON block or reach stream flush.
-  return ['', text];
-}
-
-function findSuspiciousPrefixStart(s) {
-  let start = -1;
-  for (const needle of ['{', '[', '```']) {
-    const idx = s.lastIndexOf(needle);
-    if (idx > start) {
-      start = idx;
+  // Only hold back partial XML tool tags.
+  const xmlIdx = findPartialXMLToolTagStart(text);
+  if (xmlIdx >= 0) {
+    if (insideCodeFenceWithState(state, text.slice(0, xmlIdx))) {
+      return [text, ''];
     }
+    const markdown = markdownCodeSpanStateAt(state, text.slice(0, xmlIdx));
+    if (markdown.ticks > 0) {
+      if (markdownCodeSpanCloses(text.slice(xmlIdx), markdown.ticks)) {
+        return [text, ''];
+      }
+      if (markdown.fromPrior) {
+        return ['', text];
+      }
+    }
+    if (xmlIdx > 0) {
+      return [text.slice(0, xmlIdx), text.slice(xmlIdx)];
+    }
+    return ['', text];
   }
-  return start;
+  return [text, ''];
 }
 
-function findToolSegmentStart(s) {
+const HOLD_TOOL_SEGMENT_START = -2;
+
+function findToolSegmentStart(state, s) {
   if (!s) {
     return -1;
   }
-  const lower = s.toLowerCase();
-  const keywords = ['tool_calls', 'function.name:', '[tool_call_history]'];
   let offset = 0;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
-    let bestKeyIdx = -1;
-    let matchedKeyword = '';
-
-    for (const kw of keywords) {
-      const idx = lower.indexOf(kw, offset);
-      if (idx >= 0) {
-        if (bestKeyIdx < 0 || idx < bestKeyIdx) {
-          bestKeyIdx = idx;
-          matchedKeyword = kw;
-        }
-      }
-    }
-
-    if (bestKeyIdx < 0) {
+    const tag = findToolMarkupTagOutsideIgnored(s, offset);
+    if (!tag) {
       return -1;
     }
-
-    const keyIdx = bestKeyIdx;
-    const start = s.slice(0, keyIdx).lastIndexOf('{');
-    const candidateStart = start >= 0 ? start : keyIdx;
-    if (!insideCodeFence(s.slice(0, candidateStart))) {
-      return candidateStart;
+    if (insideCodeFenceWithState(state, s.slice(0, tag.start))) {
+      offset = tag.end + 1;
+      continue;
     }
-    offset = keyIdx + matchedKeyword.length;
+    const markdown = markdownCodeSpanStateAt(state, s.slice(0, tag.start));
+    if (markdown.ticks === 0) {
+      return tag.start;
+    }
+    if (markdownCodeSpanCloses(s.slice(tag.start), markdown.ticks)) {
+      offset = tag.end + 1;
+      continue;
+    }
+    if (markdown.fromPrior) {
+      return HOLD_TOOL_SEGMENT_START;
+    }
+    return tag.start;
   }
+}
+
+function markdownCodeSpanStateAt(state, text) {
+  const raw = typeof text === 'string' ? text : '';
+  let ticks = state && Number.isInteger(state.markdownCodeSpanTicks) ? state.markdownCodeSpanTicks : 0;
+  let fromPrior = ticks > 0;
+  for (let i = 0; i < raw.length;) {
+    if (raw[i] !== '`') {
+      i += 1;
+      continue;
+    }
+    const run = countBacktickRun(raw, i);
+    if (ticks === 0) {
+      if (run >= 3 && atMarkdownFenceLineStart(raw, i)) {
+        i += run;
+        continue;
+      }
+      if (state && insideCodeFenceWithState(state, raw.slice(0, i))) {
+        i += run;
+        continue;
+      }
+      ticks = run;
+      fromPrior = false;
+    } else if (run === ticks) {
+      ticks = 0;
+      fromPrior = false;
+    }
+    i += run;
+  }
+  return { ticks, fromPrior };
+}
+
+function markdownCodeSpanCloses(text, ticks) {
+  const raw = typeof text === 'string' ? text : '';
+  if (!Number.isInteger(ticks) || ticks <= 0) {
+    return false;
+  }
+  for (let i = 0; i < raw.length;) {
+    if (raw[i] !== '`') {
+      i += 1;
+      continue;
+    }
+    const run = countBacktickRun(raw, i);
+    if (run === ticks) {
+      return true;
+    }
+    i += run;
+  }
+  return false;
+}
+
+function shouldResetUnclosedMarkdownPrefix(state, prefix, suffix) {
+  const markdown = markdownCodeSpanStateAt(state, prefix);
+  return markdown.ticks > 0 && !markdown.fromPrior && !markdownCodeSpanCloses(suffix, markdown.ticks);
+}
+
+function countBacktickRun(text, start) {
+  let count = 0;
+  while (start + count < text.length && text[start + count] === '`') {
+    count += 1;
+  }
+  return count;
+}
+
+function atMarkdownFenceLineStart(text, idx) {
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const ch = text[i];
+    if (ch === ' ' || ch === '\t') {
+      continue;
+    }
+    return ch === '\n' || ch === '\r';
+  }
+  return true;
 }
 
 function consumeToolCapture(state, toolNames) {
@@ -204,63 +301,26 @@ function consumeToolCapture(state, toolNames) {
   if (!captured) {
     return { ready: false, prefix: '', calls: [], suffix: '' };
   }
-  const lower = captured.toLowerCase();
-  
-  let keyIdx = -1;
-  const keywords = ['tool_calls', 'function.name:', '[tool_call_history]'];
-  for (const kw of keywords) {
-    const idx = lower.indexOf(kw);
-    if (idx >= 0 && (keyIdx < 0 || idx < keyIdx)) {
-      keyIdx = idx;
-    }
+
+  // XML-only tool call extraction.
+  const xmlResult = consumeXMLToolCaptureImpl(captured, toolNames, trimWrappingJSONFence);
+  if (xmlResult.ready) {
+    return xmlResult;
   }
-  
-  if (keyIdx < 0) {
+  // If XML tags are present but block is incomplete, keep buffering.
+  if (hasOpenXMLToolTag(captured)) {
     return { ready: false, prefix: '', calls: [], suffix: '' };
   }
-  const start = captured.slice(0, keyIdx).lastIndexOf('{');
-  const actualStart = start >= 0 ? start : keyIdx;
-  
-  const obj = extractJSONObjectFrom(captured, actualStart);
-  if (!obj.ok) {
+  if (shouldKeepBareInvokeCapture(captured)) {
     return { ready: false, prefix: '', calls: [], suffix: '' };
   }
 
-  const prefixPart = captured.slice(0, actualStart);
-  const suffixPart = captured.slice(obj.end);
-
-  if (insideCodeFence((state.recentTextTail || '') + prefixPart)) {
-    return {
-      ready: true,
-      prefix: captured,
-      calls: [],
-      suffix: '',
-    };
-  }
-
-  const parsed = parseStandaloneToolCallsDetailed(captured.slice(actualStart, obj.end), toolNames);
-  if (!Array.isArray(parsed.calls) || parsed.calls.length === 0) {
-    if (parsed.sawToolCallSyntax && parsed.rejectedByPolicy) {
-      return {
-        ready: true,
-        prefix: prefixPart,
-        calls: [],
-        suffix: suffixPart,
-      };
-    }
-    return {
-      ready: true,
-      prefix: captured,
-      calls: [],
-      suffix: '',
-    };
-  }
-
+  // No XML tool tags detected — release captured content as text.
   return {
     ready: true,
-    prefix: prefixPart,
-    calls: parsed.calls,
-    suffix: suffixPart,
+    prefix: captured,
+    calls: [],
+    suffix: '',
   };
 }
 
